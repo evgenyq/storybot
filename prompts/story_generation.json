@@ -1,0 +1,36 @@
+{
+  "system_prompt": {
+    "base": "Ты - мастер создания увлекательных детских историй для младшего школьного возраста (6-10 лет). Твоя задача - писать добрые, понятные и захватывающие главы для детских книг.",
+    "guidelines": [
+      "Используй простой, понятный язык без сложных слов",
+      "Создавай позитивные, добрые истории без жестокости и страшных сцен", 
+      "Включай в рассказ элементы обучения и морали",
+      "Делай диалоги живыми и естественными",
+      "Описывай события так, чтобы ребенок мог их легко представить",
+      "Используй описания персонажей для создания ярких образов"
+    ],
+    "restrictions": [
+      "Никакого насилия, смерти или страшных сцен",
+      "Избегай сложных философских концепций",
+      "Не используй взрослый юмор или отсылки",
+      "Все конфликты должны решаться мирно и конструктивно"
+    ]
+  },
+  "chapter_generation": {
+    "template": "Напиши главу детской книги длиной примерно {word_count} слов. \n\nКонтекст книги:\nНазвание: {book_title}\nОписание: {book_description}\n\nПерсонажи:\n{characters_list}\n\nПредыдущие главы:\n{previous_chapters}\n\nТема этой главы: {chapter_hint}\n\nТребования:\n- Глава должна быть интересной и захватывающей\n- Используй всех персонажей естественно, сохраняя их характеры\n- Добавь диалоги и описания\n- Завершай главу так, чтобы хотелось читать дальше\n- В конце напиши краткое описание ключевого события для иллюстрации в формате: [ИЛЛЮСТРАЦИЯ: описание сцены]",
+    "word_count_default": 600,
+    "word_count_min": 400,
+    "word_count_max": 800
+  },
+  "character_prompts": {
+    "character_description_template": "Персонаж: {name}\nОписание: {description}\nВнешность: {appearance}\nХарактер: {personality}",
+    "character_analysis_prompt": "Проанализируй описание персонажа и определи, что не хватает для полного и яркого образа:\n\nОписание: {description}\n\nПроверь наличие:\n1. Внешний вид (размер, цвет, одежда, особенности внешности)\n2. Характер (черты личности, привычки, особенности поведения) \n3. Возраст (если это важно для персонажа - для людей, детей)\n\nЕсли описание достаточно полное, верни пустой массив missing_fields.\nЕсли не хватает важной информации, составь вежливый вопрос для уточнения.\n\nВерни JSON:\n{\n  \"missing_fields\": [\"appearance\", \"personality\"],\n  \"clarification_question\": \"Расскажи побольше о том, как выглядит {name} и какой у него характер?\"\n}",
+    "character_completion_prompt": "Дополни описание персонажа недостающей информацией на основе ответа пользователя:\n\nИсходное описание: {original_description}\nДополнительная информация: {additional_info}\n\nСоздай полное описание персонажа, объединив всю информацию в один связный портрет. Включи все важные детали: внешний вид, характер, и если актуально - возраст или размер.\n\nВерни только готовое описание персонажа одним абзацем."
+  },
+  "illustration_prompts": {
+    "style_base": "Cute cartoon illustration for children's book, flat 2D vector art style like modern animated movies, simple rounded character designs with big friendly eyes, bright cheerful colors, minimal details, clean composition with white or solid color background, no realistic textures or photographic elements",
+    "scene_template": "{style_base}, {scene_description}. Characters: {characters_in_scene}. {character_descriptions}",
+    "character_consistency": "Make sure character appearances match their descriptions exactly: {character_visual_descriptions}",
+    "quality_requirements": "High quality digital illustration, professional children's book art, no text or words in image, no strange objects or artifacts, clear and simple composition"
+  }
+}
