@@ -59,7 +59,10 @@ class StoryBot:
         
         # Conversation handler для создания главы
         create_chapter_conv = ConversationHandler(
-            entry_points=[CallbackQueryHandler(self.start_create_chapter, pattern="^create_chapter_.*")],
+            entry_points=[
+                CallbackQueryHandler(self.start_create_chapter, pattern="^create_chapter_.*"),
+                CallbackQueryHandler(self.continue_book, pattern="^continue_book_.*")
+            ],
             states={
                 CHAPTER_HINT: [
                     MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_chapter_hint),
@@ -84,6 +87,7 @@ class StoryBot:
         self.application.add_handler(CallbackQueryHandler(self.show_book_details, pattern="^book_.*"))
         self.application.add_handler(CallbackQueryHandler(self.read_chapter, pattern="^read_chapter_.*"))
         
+        
         # Обработка ошибок
         self.application.add_error_handler(self.error_handler)
     
@@ -92,13 +96,21 @@ class StoryBot:
         user = update.effective_user
         
         # Получаем или создаем пользователя в БД
-        await db.get_or_create_user(user.id, user.username)
+        db_user = await db.get_or_create_user(user.id, user.username)
+        
+        # Проверяем есть ли у пользователя книги
+        books = await db.get_user_books(db_user['id'])
+        logger.info(f"Пользователь {user.first_name} (ID: {user.id}), найдено книг: {len(books) if books else 0}")
+        if books:
+            for i, book in enumerate(books[:3]):  # Логируем первые 3 книги
+                logger.info(f"Книга {i+1}: ID={book['id']}, название='{book['title']}'")
         
         welcome_text = f"🌟 Привет, {user.first_name}! Добро пожаловать в StoryBot!\n\n" \
                       f"Я помогу тебе создавать удивительные детские книжки с персонажами и иллюстрациями! ✨📚\n\n" \
                       f"Что ты хочешь сделать?"
         
-        keyboard = self.get_main_menu_keyboard()
+        # Адаптивное меню в зависимости от пользователя
+        keyboard = self.get_adaptive_menu_keyboard(books)
         
         if update.message:
             await update.message.reply_text(welcome_text, reply_markup=keyboard)
@@ -123,8 +135,25 @@ class StoryBot:
         
         await update.message.reply_text(help_text, parse_mode='Markdown')
     
+    def get_adaptive_menu_keyboard(self, books: List[Dict]):
+        """Адаптивная клавиатура в зависимости от пользователя"""
+        if not books:
+            # Новый пользователь - только создание первой книги
+            keyboard = [
+                [InlineKeyboardButton("📝 Создать первую книгу", callback_data="create_book")],
+                [InlineKeyboardButton("ℹ️ Помощь", callback_data="help")]
+            ]
+        else:
+            # Есть книги - полное меню с кнопкой "Продолжить"
+            keyboard = [
+                [InlineKeyboardButton("📝 Новая книга", callback_data="create_book")],
+                [InlineKeyboardButton("📚 Мои книги", callback_data="my_books"), InlineKeyboardButton("✍️ Продолжить последнюю", callback_data=f"continue_book_{books[0]['id']}")],
+                [InlineKeyboardButton("ℹ️ Помощь", callback_data="help")]
+            ]
+        return InlineKeyboardMarkup(keyboard)
+    
     def get_main_menu_keyboard(self):
-        """Клавиатура главного меню"""
+        """Стандартная клавиатура главного меню (fallback)"""
         keyboard = [
             [InlineKeyboardButton("📝 Создать новую книгу", callback_data="create_book")],
             [InlineKeyboardButton("📚 Мои книги", callback_data="my_books")],
@@ -135,6 +164,32 @@ class StoryBot:
     async def handle_main_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Возврат в главное меню"""
         await self.start_command(update, context)
+    
+    async def continue_book(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Продолжить последнюю книгу - перейти к созданию новой главы"""
+        try:
+            logger.info(f"continue_book вызван, callback_data: {update.callback_query.data}")
+            book_id = update.callback_query.data.split("_")[2]
+            logger.info(f"Извлеченный book_id: {book_id}")
+            
+            # Проверяем что книга существует
+            book = await db.get_book(book_id)
+            if not book:
+                logger.error(f"Книга с ID {book_id} не найдена")
+                await update.callback_query.answer("Книга не найдена!")
+                return ConversationHandler.END
+            
+            logger.info(f"Книга найдена: {book['title']}")
+            
+            # Вызываем start_create_chapter напрямую с book_id
+            logger.info(f"Перенаправляем в start_create_chapter с book_id: {book_id}")
+            
+            return await self.start_create_chapter_direct(update, context, book_id)
+            
+        except Exception as e:
+            logger.error(f"Ошибка в continue_book: {e}")
+            await update.callback_query.answer("Произошла ошибка!")
+            return ConversationHandler.END
     
     async def show_my_books(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Показать книги пользователя"""
@@ -324,14 +379,8 @@ class StoryBot:
         name = context.user_data['current_character']['name']
         context.user_data['current_character']['original_description'] = description
         
-        # Показываем что анализируем
-        analyzing_msg = await update.message.reply_text(
-            f"🤖 Анализирую описание {name}...",
-            parse_mode='Markdown'
-        )
-        
         try:
-            # Анализируем описание через ИИ
+            # Анализируем описание через ИИ (без показа технического сообщения)
             analysis = await character_analyzer.analyze_character_description(name, description)
             
             missing_fields = analysis.get("missing_fields", [])
@@ -341,7 +390,7 @@ class StoryBot:
                 # Нужны уточнения
                 context.user_data['current_character']['needs_clarification'] = True
                 
-                await analyzing_msg.edit_text(
+                await update.message.reply_text(
                     f"✨ Хорошее начало!\n\n"
                     f"📝 **{name}**: {description}\n\n"
                     f"Давай добавим еще несколько деталей:\n\n"
@@ -351,14 +400,6 @@ class StoryBot:
                 return CREATE_CHARACTER_CLARIFICATION
             else:
                 # Описание достаточно полное
-                await analyzing_msg.edit_text(
-                    f"✅ Отличное описание!\n\n"
-                    f"📝 **{name}**: {description}\n\n"
-                    f"Создаю полный образ персонажа...",
-                    parse_mode='Markdown'
-                )
-                
-                # Создаем финальное описание
                 full_description = description  # Используем как есть, если анализ показал что достаточно
                 context.user_data['current_character']['full_description'] = full_description
                 
@@ -367,12 +408,6 @@ class StoryBot:
         except Exception as e:
             logger.error(f"Ошибка анализа персонажа: {e}")
             # Fallback - продолжаем с исходным описанием
-            await analyzing_msg.edit_text(
-                f"✅ Персонаж создан!\n\n"
-                f"📝 **{name}**: {description}",
-                parse_mode='Markdown'
-            )
-            
             context.user_data['current_character']['full_description'] = description
             return await self.finish_character_creation(update, context)
     
@@ -389,26 +424,13 @@ class StoryBot:
         name = context.user_data['current_character']['name']
         original_description = context.user_data['current_character']['original_description']
         
-        # Показываем что создаем полное описание
-        completing_msg = await update.message.reply_text(
-            f"🎨 Создаю полный образ {name}...",
-            parse_mode='Markdown'
-        )
-        
         try:
-            # Создаем полное описание персонажа
+            # Создаем полное описание персонажа (без показа технического сообщения)
             full_description = await character_analyzer.complete_character_description(
                 name, original_description, additional_info
             )
             
             context.user_data['current_character']['full_description'] = full_description
-            
-            await completing_msg.edit_text(
-                f"✅ **{name} готов!**\n\n"
-                f"📝 Полное описание: _{full_description}_\n\n"
-                f"Отлично! Персонаж получился очень ярким! 🌟",
-                parse_mode='Markdown'
-            )
             
             return await self.finish_character_creation(update, context)
             
@@ -418,39 +440,106 @@ class StoryBot:
             full_description = f"{original_description}. {additional_info}"
             context.user_data['current_character']['full_description'] = full_description
             
-            await completing_msg.edit_text(
-                f"✅ **{name} готов!**\n\n"
-                f"📝 Описание: _{full_description}_",
-                parse_mode='Markdown'
-            )
-            
             return await self.finish_character_creation(update, context)
     
     async def finish_character_creation(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        """Завершение создания персонажа и показ кнопок выбора"""
+        """Завершение создания персонажа - сначала описание, потом портрет, потом кнопки"""
         char = context.user_data['current_character']
         context.user_data['characters'].append(char)
         
         char_count = len(context.user_data['characters'])
         
+        # Показываем описание персонажа
         text = f"🎉 Персонаж создан!\n\n"
         text += f"👤 **{char['name']}**\n"
-        text += f"📝 _{char['full_description']}_\n\n"
-        text += f"Всего персонажей: **{char_count}**\n\n"
-        text += "Что дальше?"
+        text += f"📝 _{char['full_description']}_"
         
-        keyboard = [
-            [InlineKeyboardButton("➕ Добавить еще персонажа", callback_data="add_character")],
-            [InlineKeyboardButton("✅ Закончить и создать книгу", callback_data="finish_characters")]
-        ]
+        await update.message.reply_text(text, parse_mode='Markdown')
         
-        await update.message.reply_text(
-            text,
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode='Markdown'
-        )
+        # Генерируем портрет персонажа (в процессе создания, а не в конце)
+        await self.generate_character_portrait_and_buttons(update, context, char, char_count)
+        
         return ADD_MORE_CHARACTERS
     
+    async def generate_character_portrait_and_buttons(self, update: Update, context: ContextTypes.DEFAULT_TYPE, char: Dict, char_count: int):
+        """Генерирует портрет персонажа и показывает кнопки навигации"""
+        try:
+            # Показываем что генерируем портрет (краткая обратная связь)
+            portrait_msg = await update.message.reply_text("🎨 Создаю портрет...")
+            
+            # Генерируем портрет напрямую используя image_generator
+            # Создаем временный ID для персонажа (можно использовать имя)
+            temp_character_id = f"temp_{char['name']}_{char_count}"
+            
+            success = await image_generator.generate_character_reference(
+                character_id=temp_character_id,
+                name=char['name'],
+                description=char['full_description']
+            )
+            
+            await portrait_msg.delete()
+            
+            if success:
+                # Пытаемся получить и показать сгенерированный портрет
+                try:
+                    # Поскольку мы не сохраняем в БД, попробуем другой подход
+                    # Генерируем иллюстрацию через обычный генератор
+                    image_url = await image_generator.generate_illustration(
+                        scene_description=f"Character portrait: {char['full_description']}",
+                        characters=[],  # Пустой список, так как это сам персонаж
+                        book_title="Character Reference"
+                    )
+                    
+                    if image_url:
+                        if image_url.startswith('http'):
+                            # URL изображения (DALL-E)
+                            await update.message.reply_photo(
+                                photo=image_url,
+                                caption=f"✅ Портрет **{char['name']}** готов!",
+                                parse_mode='Markdown'
+                            )
+                        else:
+                            # Локальный файл (Gemini)
+                            with open(image_url, 'rb') as photo:
+                                await update.message.reply_photo(
+                                    photo=photo,
+                                    caption=f"✅ Портрет **{char['name']}** готов!",
+                                    parse_mode='Markdown'
+                                )
+                    
+                except Exception as img_error:
+                    logger.error(f"Ошибка при отображении портрета: {img_error}")
+                    # Продолжаем даже если изображение не показалось
+            
+            # Показываем кнопки навигации ПОСЛЕ портрета
+            text = f"Всего персонажей: **{char_count}**\n\nЧто дальше?"
+            
+            keyboard = [
+                [InlineKeyboardButton("➕ Добавить еще персонажа", callback_data="add_character")],
+                [InlineKeyboardButton("✅ Закончить и создать книгу", callback_data="finish_characters")]
+            ]
+            
+            await update.message.reply_text(
+                text,
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode='Markdown'
+            )
+            
+        except Exception as e:
+            logger.error(f"Ошибка при генерации портрета персонажа: {e}")
+            # Показываем кнопки даже если портрет не удалось создать
+            text = f"Всего персонажей: **{char_count}**\n\nЧто дальше?"
+            
+            keyboard = [
+                [InlineKeyboardButton("➕ Добавить еще персонажа", callback_data="add_character")],
+                [InlineKeyboardButton("✅ Закончить и создать книгу", callback_data="finish_characters")]
+            ]
+            
+            await update.message.reply_text(
+                text,
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode='Markdown'
+            )
     
     async def add_more_characters(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Добавить еще персонажа"""
@@ -487,23 +576,10 @@ class StoryBot:
                 )
                 created_characters.append(character)
             
-            # Отправляем уведомление о начале генерации референсов
-            await update.callback_query.message.reply_text(
-                f"🎨 Создаю визуальные портреты персонажей...\n\n"
-                f"Это займет несколько секунд и поможет сделать иллюстрации более консистентными.",
-                parse_mode='Markdown'
-            )
-            
-            # Генерируем референсы для всех персонажей
+            # Генерируем референсы для всех персонажей (без показа технического сообщения)
             references_created = 0
             for i, character in enumerate(created_characters):
                 char_data = context.user_data['characters'][i]
-                
-                # Показываем прогресс
-                await update.callback_query.message.reply_text(
-                    f"🎨 Создаю портрет: **{character['name']}** ({i+1}/{len(created_characters)})",
-                    parse_mode='Markdown'
-                )
                 
                 # Генерируем референс
                 success = await image_generator.generate_character_reference(
@@ -571,16 +647,30 @@ class StoryBot:
     
     async def start_create_chapter(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Начать создание главы"""
-        book_id = update.callback_query.data.split("_")[2]
-        book = await db.get_book(book_id)
-        chapters = await db.get_book_chapters(book_id)
-        
-        if not book:
-            await update.callback_query.answer("Книга не найдена!")
+        try:
+            logger.info(f"start_create_chapter вызван, callback_data: {update.callback_query.data}")
+            book_id = update.callback_query.data.split("_")[2]
+            logger.info(f"Извлеченный book_id: {book_id}")
+            
+            book = await db.get_book(book_id)
+            chapters = await db.get_book_chapters(book_id)
+            
+            logger.info(f"Книга: {book['title'] if book else 'Не найдена'}")
+            logger.info(f"Количество глав: {len(chapters) if chapters else 0}")
+            
+            if not book:
+                logger.error(f"Книга с ID {book_id} не найдена в start_create_chapter")
+                await update.callback_query.answer("Книга не найдена!")
+                return ConversationHandler.END
+            
+            context.user_data['current_book_id'] = book_id
+            next_chapter_num = len(chapters) + 1
+            logger.info(f"Создаем главу номер: {next_chapter_num}")
+            
+        except Exception as e:
+            logger.error(f"Ошибка в start_create_chapter: {e}")
+            await update.callback_query.answer("Произошла ошибка!")
             return ConversationHandler.END
-        
-        context.user_data['current_book_id'] = book_id
-        next_chapter_num = len(chapters) + 1
         
         text = f"✍️ **Пишем главу {next_chapter_num}**\n\n"
         text += f"📖 Книга: **{book['title']}**\n\n"
@@ -600,9 +690,57 @@ class StoryBot:
         )
         return CHAPTER_HINT
     
+    async def start_create_chapter_direct(self, update: Update, context: ContextTypes.DEFAULT_TYPE, book_id: str) -> int:
+        """Начать создание главы с переданным book_id"""
+        try:
+            logger.info(f"start_create_chapter_direct вызван с book_id: {book_id}")
+            
+            book = await db.get_book(book_id)
+            chapters = await db.get_book_chapters(book_id)
+            
+            logger.info(f"Книга: {book['title'] if book else 'Не найдена'}")
+            logger.info(f"Количество глав: {len(chapters) if chapters else 0}")
+            
+            if not book:
+                logger.error(f"Книга с ID {book_id} не найдена в start_create_chapter_direct")
+                await update.callback_query.answer("Книга не найдена!")
+                return ConversationHandler.END
+            
+            context.user_data['current_book_id'] = book_id
+            next_chapter_num = len(chapters) + 1
+            logger.info(f"Создаем главу номер: {next_chapter_num}")
+            
+            text = f"✍️ **Пишем главу {next_chapter_num}**\n\n"
+            text += f"📖 Книга: **{book['title']}**\n\n"
+            text += f"Можешь дать подсказку о том, что должно произойти в этой главе, или я сам придумаю интересное продолжение! 🎭\n\n"
+            text += f"💡 Например: 'Герои встречают нового друга' или 'Они попадают в волшебный лес'\n\n"
+            text += f"Что делаем?"
+            
+            keyboard = [
+                [InlineKeyboardButton("🎲 Сгенерировать автоматически", callback_data="auto_generate")],
+                [InlineKeyboardButton("💬 Дать подсказку", callback_data="give_hint")]
+            ]
+            
+            await update.callback_query.edit_message_text(
+                text,
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode='Markdown'
+            )
+            return CHAPTER_HINT
+            
+        except Exception as e:
+            logger.error(f"Ошибка в start_create_chapter_direct: {e}")
+            await update.callback_query.answer("Произошла ошибка!")
+            return ConversationHandler.END
+    
     async def auto_generate_chapter(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Автоматическая генерация главы"""
-        await self.generate_chapter(update, context)
+        # Убираем кнопки и показываем прогресс
+        await update.callback_query.edit_message_text(
+            "📖 Генерирую главу автоматически...\n\n⏳ Это займет 10-30 секунд"
+        )
+        
+        await self.generate_chapter(update, context, progress_msg=update.callback_query.message)
         return ConversationHandler.END
     
     async def ask_for_hint(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -632,16 +770,15 @@ class StoryBot:
         hint = update.message.text.strip()
         context.user_data['chapter_hint'] = hint
         
-        await update.message.reply_text(
-            f"💡 Отлично! Тема главы: _{hint}_\n\n"
-            f"Начинаю генерацию... ⏳",
-            parse_mode='Markdown'
+        # Показываем прогресс генерации
+        progress_msg = await update.message.reply_text(
+            f"📖 Генерирую главу с подсказкой: _{hint}_\n\n⏳ Это займет 10-30 секунд"
         )
         
-        await self.generate_chapter(update, context, hint)
+        await self.generate_chapter(update, context, hint, progress_msg)
         return ConversationHandler.END
     
-    async def generate_chapter(self, update: Update, context: ContextTypes.DEFAULT_TYPE, hint: str = ""):
+    async def generate_chapter(self, update: Update, context: ContextTypes.DEFAULT_TYPE, hint: str = "", progress_msg=None):
         """Генерация главы с помощью ИИ"""
         try:
             book_id = context.user_data['current_book_id']
@@ -651,26 +788,7 @@ class StoryBot:
             
             next_chapter_num = len(chapters) + 1
             
-            # Показываем сообщение о начале генерации
-            generating_msg = f"🤖 Генерирую главу {next_chapter_num}...\n\n"
-            generating_msg += f"📖 Книга: **{book['title']}**\n"
-            if hint:
-                generating_msg += f"💡 Тема: _{hint}_\n"
-            generating_msg += f"👥 Персонажей: {len(characters)}\n\n"
-            generating_msg += "⏳ Это может занять 10-30 секунд..."
-            
-            if update.callback_query:
-                await update.callback_query.edit_message_text(
-                    generating_msg,
-                    parse_mode='Markdown'
-                )
-            else:
-                await update.message.reply_text(
-                    generating_msg,
-                    parse_mode='Markdown'
-                )
-            
-            # Генерируем главу с помощью OpenAI
+            # Генерируем главу с помощью OpenAI (без показа технического сообщения)
             generated_chapter = await ai_generator.generate_chapter(
                 book_title=book['title'],
                 book_description=book['description'],
@@ -707,35 +825,42 @@ class StoryBot:
             else:
                 text += full_content
             
-            keyboard = [
-                [InlineKeyboardButton(f"✍️ Написать главу {next_chapter_num + 1}", callback_data=f"create_chapter_{book_id}")],
-                [InlineKeyboardButton("📚 К книге", callback_data=f"book_{book_id}")],
-                [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]
-            ]
-            
-            # Отправляем главу
-            if update.callback_query:
-                await update.callback_query.edit_message_text(
-                    text,
-                    reply_markup=InlineKeyboardMarkup(keyboard),
-                    parse_mode='Markdown'
-                )
+            # Показываем готовую главу БЕЗ кнопок сначала
+            if progress_msg:
+                # Редактируем сообщение с прогрессом
+                await progress_msg.edit_text(text, parse_mode='Markdown')
+                user_id = progress_msg.chat.id
+            elif update.callback_query:
+                await update.callback_query.edit_message_text(text, parse_mode='Markdown')
                 user_id = update.callback_query.from_user.id
             else:
-                await update.message.reply_text(
-                    text,
-                    reply_markup=InlineKeyboardMarkup(keyboard),
-                    parse_mode='Markdown'
-                )
+                await update.message.reply_text(text, parse_mode='Markdown')
                 user_id = update.message.from_user.id
             
-            # Генерируем иллюстрацию асинхронно
+            # Генерируем и показываем иллюстрацию
             await self.generate_and_send_illustration(
                 user_id, 
                 generated_chapter['illustration_prompt'],
                 characters,
                 book['title'],
                 chapter['id']
+            )
+            
+            # ПОСЛЕ иллюстрации показываем кнопки навигации
+            keyboard = [
+                [InlineKeyboardButton(f"✍️ Написать главу {next_chapter_num + 1}", callback_data=f"create_chapter_{book_id}")],
+                [InlineKeyboardButton("📚 К книге", callback_data=f"book_{book_id}")],
+                [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]
+            ]
+            
+            nav_text = f"📚 **Глава {next_chapter_num} готова!**\n\nЧто дальше?"
+            
+            # Отправляем кнопки навигации отдельным сообщением
+            await self.application.bot.send_message(
+                chat_id=user_id,
+                text=nav_text,
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode='Markdown'
             )
             
         except Exception as e:
@@ -820,13 +945,7 @@ class StoryBot:
     ):
         """Генерируем и отправляем иллюстрацию пользователю"""
         try:
-            # Отправляем сообщение о начале генерации
-            await self.application.bot.send_message(
-                chat_id=user_id,
-                text=f"🎨 Генерирую иллюстрацию...\n\n💡 Сцена: _{illustration_prompt}_"
-            )
-            
-            # Генерируем иллюстрацию через Gemini (с DALL-E fallback)
+            # Генерируем иллюстрацию через Gemini (с DALL-E fallback) без показа технического сообщения
             image_url = await image_generator.generate_illustration(
                 scene_description=illustration_prompt,
                 characters=characters,
