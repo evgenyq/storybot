@@ -100,6 +100,93 @@ class AIGenerator:
         # Если не найден, создаем общее описание
         return "сцена из детской книги с главными персонажами"
     
+    async def generate_illustration_prompts(
+        self,
+        chapter_content: str,
+        characters: List[Dict],
+        book_title: str,
+        num_illustrations: int = 1
+    ) -> List[str]:
+        """
+        Генерируем промпты для множественных иллюстраций
+        
+        Args:
+            chapter_content: Текст главы
+            characters: Персонажи книги
+            book_title: Название книги
+            num_illustrations: Количество нужных иллюстраций
+        
+        Returns:
+            List[str]: Список промптов для иллюстраций
+        """
+        try:
+            if num_illustrations == 1:
+                # Для одной иллюстрации используем старую логику
+                return [self._extract_illustration_prompt(chapter_content)]
+            
+            # Создаем промпт для анализа главы и генерации нескольких сцен
+            characters_names = [char['name'] for char in characters]
+            characters_str = ", ".join(characters_names) if characters_names else "персонажи"
+            
+            analysis_prompt = (
+                f"Проанализируй эту главу детской книги и выбери {num_illustrations} ключевые сцены для иллюстраций.\n\n"
+                f"Название книги: {book_title}\n"
+                f"Персонажи: {characters_str}\n\n"
+                f"Текст главы:\n{chapter_content}\n\n"
+                f"Инструкции:\n"
+                f"1. Выбери {num_illustrations} самых важных и визуально интересных сцены\n"
+                f"2. Для каждой сцены напиши краткое описание (1-2 предложения)\n"
+                f"3. Описания должны подходить для детских иллюстраций\n"
+                f"4. Включай персонажей в описания\n\n"
+                f"Формат ответа:\n"
+                f"ИЛЛЮСТРАЦИЯ 1: [краткое описание первой сцены]\n"
+                f"ИЛЛЮСТРАЦИЯ 2: [краткое описание второй сцены]\n"
+            )
+            
+            if num_illustrations == 3:
+                analysis_prompt += f"ИЛЛЮСТРАЦИЯ 3: [краткое описание третьей сцены]\n"
+            
+            response = self.openai_client.chat.completions.create(
+                model=settings.openai_model,
+                messages=[
+                    {
+                        "role": "system", 
+                        "content": "Ты эксперт по детским книжным иллюстрациям. Анализируешь тексты глав и выбираешь лучшие сцены для рисования."
+                    },
+                    {"role": "user", "content": analysis_prompt}
+                ],
+                temperature=0.7,
+                max_tokens=500
+            )
+            
+            response_text = response.choices[0].message.content.strip()
+            
+            # Извлекаем промпты из ответа
+            prompts = []
+            import re
+            
+            # Ищем паттерны "ИЛЛЮСТРАЦИЯ N: описание"
+            matches = re.findall(r'ИЛЛЮСТРАЦИЯ\s+\d+:\s*([^\n]+)', response_text, re.IGNORECASE)
+            
+            for match in matches:
+                prompts.append(match.strip())
+            
+            # Если не нашли нужное количество промптов, дополняем общими
+            while len(prompts) < num_illustrations:
+                prompts.append(f"сцена из детской книги '{book_title}' с персонажами {characters_str}")
+            
+            # Ограничиваем количество нужным числом
+            prompts = prompts[:num_illustrations]
+            
+            logger.info(f"Сгенерировано {len(prompts)} промптов для иллюстраций: {prompts}")
+            return prompts
+            
+        except Exception as e:
+            logger.error(f"Ошибка генерации промптов для иллюстраций: {e}")
+            # Fallback - возвращаем общие промпты
+            characters_str = ", ".join([char['name'] for char in characters]) if characters else "персонажи"
+            return [f"сцена из детской книги '{book_title}' с персонажами {characters_str}"] * num_illustrations
+
     async def generate_chapter(
         self, 
         book_title: str,

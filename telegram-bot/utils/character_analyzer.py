@@ -1,13 +1,10 @@
 import json
 import re
 from typing import Dict, List, Optional
-from openai import OpenAI
 from loguru import logger
 
-from config.settings import settings
 class CharacterAnalyzer:
     def __init__(self):
-        self.client = OpenAI(api_key=settings.openai_api_key)
         self._prompts = None
     
     @property
@@ -79,40 +76,6 @@ class CharacterAnalyzer:
                 "clarification_question": ""
             }
     
-    async def complete_character_description(self, name: str, original_description: str, additional_info: str) -> str:
-        """
-        Дополняет описание персонажа на основе дополнительной информации
-        
-        Returns:
-            Полное описание персонажа одним абзацем
-        """
-        try:
-            prompt_template = self.prompts.get("character_prompts", {}).get("character_completion_prompt", "")
-            prompt = prompt_template.format(
-                original_description=original_description,
-                additional_info=additional_info
-            )
-            
-            logger.debug(f"Дополняем описание персонажа {name}")
-            
-            response = self.client.chat.completions.create(
-                model=settings.openai_model,
-                messages=[
-                    {"role": "system", "content": "Ты - мастер создания ярких описаний персонажей детских книг. Создавай полные, но понятные детям описания."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.7
-            )
-            
-            result = response.choices[0].message.content.strip()
-            logger.info(f"Создано полное описание персонажа {name}: {len(result)} символов")
-            
-            return result
-            
-        except Exception as e:
-            logger.error(f"Ошибка дополнения описания персонажа: {e}")
-            # Возвращаем объединенное описание как fallback
-            return f"{original_description}. {additional_info}"
 
 # Глобальный экземпляр
 character_analyzer = CharacterAnalyzer()

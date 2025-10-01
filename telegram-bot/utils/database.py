@@ -172,6 +172,29 @@ class DatabaseManager:
             logger.error(f"Ошибка при сохранении референса персонажа {character_id}: {e}")
             raise
     
+    async def save_character_reference_data(self, character_id: str, image_data: bytes, description: str) -> bool:
+        """
+        Сохранить готовые данные референса персонажа в БД
+        
+        Args:
+            character_id: ID персонажа в БД
+            image_data: Готовые данные изображения в байтах 
+            description: Описание персонажа (для промпта)
+            
+        Returns:
+            True если успешно сохранено
+        """
+        try:
+            # Создаём упрощенный промпт из описания
+            prompt = f"Character reference for: {description[:100]}{'...' if len(description) > 100 else ''}"
+            
+            # Используем существующий метод save_character_reference
+            return await self.save_character_reference(character_id, image_data, prompt)
+            
+        except Exception as e:
+            logger.error(f"Ошибка при сохранении данных референса персонажа {character_id}: {e}")
+            return False
+    
     async def get_character_reference(self, character_id: str) -> Optional[bytes]:
         """Получить референс персонажа из БД"""
         try:

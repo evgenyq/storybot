@@ -244,12 +244,9 @@ class ImageGenerator:
         """
         try:
             logger.info(f"Генерируем референс для персонажа {name}")
-            
-            # Переводим описание на английский
-            description_english = await translator.translate_to_english(description)
-            
-            # Строим промпт для генерации референса
-            reference_prompt = self._build_character_reference_prompt(name, description_english)
+
+            # Строим промпт для генерации referencer
+            reference_prompt = self._build_character_reference_prompt(name, description)
             
             logger.debug(f"Промпт для референса {name}: {reference_prompt}")
             
@@ -293,13 +290,13 @@ class ImageGenerator:
             logger.error(f"Ошибка генерации референса для {name}: {e}")
             return False
     
-    def _build_character_reference_prompt(self, name: str, description_english: str) -> str:
+    def _build_character_reference_prompt(self, name: str, description: str) -> str:
         """Строим оптимизированный промпт для создания референса персонажа"""
-        
+
         prompt = f"""
 Simple Disney-Pixar character portrait, minimalist 2D cartoon style, basic rounded features.
 
-{description_english}
+{description}
 
 Create a small, simple character reference image. Basic cartoon portrait, minimal details, clean style, small size. White background, no complex elements, just the character.
 """
@@ -347,20 +344,17 @@ Create a small, simple character reference image. Basic cartoon portrait, minima
         """
         try:
             logger.info(f"Генерируем сцену с референсами: {scene_description[:50]}...")
-            
-            # Переводим описание сцены на английский
-            scene_description_english = await translator.translate_to_english(scene_description)
-            
+
             # Фильтруем персонажей с референсами
             characters_with_refs = [char for char in characters if char.get('has_reference') and char.get('reference_image')]
-            
+
             if not characters_with_refs:
                 logger.warning("Нет персонажей с референсами, используем fallback")
                 return await self._generate_scene_fallback(scene_description, characters, book_title)
-            
+
             # Строим промпт для сцены
             scene_prompt = self._build_scene_with_references_prompt(
-                scene_description_english, 
+                scene_description, 
                 characters_with_refs,
                 book_title
             )
@@ -396,37 +390,37 @@ Create a small, simple character reference image. Basic cartoon portrait, minima
             return await self._generate_scene_fallback(scene_description, characters, book_title)
     
     def _build_scene_with_references_prompt(
-        self, 
-        scene_description_english: str, 
+        self,
+        scene_description: str,
         characters_with_refs: List[Dict],
         book_title: str = ""
     ) -> str:
-        """Строим промпт для сцены с использованием референсов"""
-        
+        """Строим промпт для сцены с использованием referencer"""
+
         # Базовый стиль
         style = "Disney-Pixar children's book illustration, 2D cartoon art, bright cheerful colors."
-        
+
         # Описание персонажей и их связь с референсами
         character_instructions = []
         for i, char in enumerate(characters_with_refs, 1):
             character_instructions.append(
                 f"{i}. {char['name']}: Reference image {i} shows this character"
             )
-        
+
         characters_text = "Characters (maintain exact appearance from reference images):\n" + "\n".join(character_instructions)
-        
+
         # Композиция
         composition = "Composition: Wide shot showing all characters clearly, warm lighting, clean composition suitable for children's book."
-        
+
         # Технические требования
         technical = "Technical: High quality illustration, no text or words in image, family-friendly content, clear and simple composition."
-        
+
         prompt = f"""
 Style: {style}
 
 {characters_text}
 
-Scene: {scene_description_english}
+Scene: {scene_description}
 
 {composition}
 {technical}
@@ -566,6 +560,269 @@ Scene: {scene_description_english}
             return response.content
         except Exception as e:
             logger.error(f"Ошибка скачивания изображения: {e}")
+            return None
+
+    def generate_illustration_sync(
+        self,
+        scene_description: str,
+        characters: List[Dict],
+        book_title: str = ""
+    ) -> Optional[str]:
+        """
+        СИНХРОННАЯ генерация иллюстрации для использования в отдельном потоке
+        Минимальная версия без дублирования логики
+        """
+        try:
+            logger.info(f"🚀 Синхронная генерация иллюстрации: {scene_description[:50]}...")
+
+            # Получаем персонажей с референсами из БД (синхронно)
+            characters_with_refs = None
+            if characters and len(characters) > 0:
+                book_id = characters[0].get('book_id')
+                if book_id:
+                    # Прямой синхронный запрос к Supabase
+                    result = db.supabase.table("characters").select(
+                        "id, name, full_description, has_reference, reference_image"
+                    ).eq("book_id", book_id).execute()
+
+                    if result.data:
+                        # Обрабатываем reference_image (декодируем hex → bytes)
+                        characters_with_refs = []
+                        for char_data in result.data:
+                            char = {
+                                "id": char_data["id"],
+                                "name": char_data["name"],
+                                "full_description": char_data["full_description"],
+                                "has_reference": char_data["has_reference"]
+                            }
+
+                            # Декодируем hex данные в bytes
+                            if char_data["has_reference"] and char_data.get("reference_image"):
+                                hex_data = char_data["reference_image"]
+                                if isinstance(hex_data, str) and hex_data.startswith("\\x"):
+                                    hex_string = hex_data[2:]
+                                    char["reference_image"] = bytes.fromhex(hex_string)
+                                elif isinstance(hex_data, bytes):
+                                    char["reference_image"] = hex_data
+
+                            characters_with_refs.append(char)
+
+                        # Если есть персонажи с референсами, используем систему с референсами
+                        if any(char.get('has_reference') and char.get('reference_image') for char in characters_with_refs):
+                            logger.info("🎯 Используем систему с референсами (синхронно)")
+                            return self._generate_scene_with_references_sync(
+                                scene_description,
+                                characters_with_refs,
+                                book_title
+                            )
+
+            # Fallback на старую систему без референсов
+            logger.info("📦 Используем систему без референсов (синхронно)")
+            return self._generate_illustration_legacy_sync(
+                scene_description,
+                characters,
+                book_title
+            )
+
+        except Exception as e:
+            logger.error(f"Ошибка синхронной генерации иллюстрации: {e}")
+            return None
+
+    def _generate_scene_with_references_sync(
+        self,
+        scene_description: str,
+        characters_with_refs: List[Dict],
+        book_title: str = ""
+    ) -> Optional[str]:
+        """Синхронная генерация сцены с референсами"""
+        try:
+            # Фильтруем персонажей с референсами
+            characters_with_valid_refs = [
+                char for char in characters_with_refs
+                if char.get('has_reference') and char.get('reference_image')
+            ]
+
+            if not characters_with_valid_refs:
+                logger.warning("Нет персонажей с референсами, fallback")
+                return self._generate_illustration_legacy_sync(scene_description, characters_with_refs, book_title)
+
+            # Строим промпт
+            scene_prompt = self._build_scene_with_references_prompt(
+                scene_description,
+                characters_with_valid_refs,
+                book_title
+            )
+
+            # Подготавливаем изображения персонажей
+            reference_images = []
+            for char in characters_with_valid_refs:
+                image_pil = Image.open(BytesIO(char['reference_image']))
+                reference_images.append(image_pil)
+
+            # Генерируем сцену СИНХРОННО
+            content_list = reference_images + [scene_prompt]
+            response = self.image_model.generate_content(content_list)
+
+            # Обрабатываем ответ
+            if hasattr(response, 'candidates') and response.candidates:
+                candidate = response.candidates[0]
+                if hasattr(candidate, 'content') and candidate.content.parts:
+                    for part in candidate.content.parts:
+                        if hasattr(part, 'inline_data') and part.inline_data:
+                            image_data = part.inline_data.data
+                            if image_data.startswith(b'\x89PNG'):
+                                logger.info("✅ Сцена с референсами сгенерирована (синхронно)")
+                                return self._save_temp_image_sync(image_data, part.inline_data.mime_type)
+
+            logger.warning("Не удалось сгенерировать сцену с референсами")
+            return self._generate_illustration_legacy_sync(scene_description, characters_with_refs, book_title)
+
+        except Exception as e:
+            logger.error(f"Ошибка генерации сцены с референсами (синхронно): {e}")
+            return self._generate_illustration_legacy_sync(scene_description, characters_with_refs, book_title)
+
+    def _generate_illustration_legacy_sync(
+        self,
+        scene_description: str,
+        characters: List[Dict],
+        book_title: str = ""
+    ) -> Optional[str]:
+        """Синхронная генерация без референсов"""
+        try:
+            # Создаем промпт
+            full_prompt = self._build_illustration_prompt(scene_description, characters, book_title)
+
+            # Генерируем изображение СИНХРОННО
+            response = self.image_model.generate_content([full_prompt])
+
+            # Обрабатываем ответ
+            if hasattr(response, 'candidates') and response.candidates:
+                candidate = response.candidates[0]
+                if hasattr(candidate, 'content') and candidate.content.parts:
+                    for part in candidate.content.parts:
+                        if hasattr(part, 'inline_data') and part.inline_data:
+                            image_data = part.inline_data.data
+                            if image_data.startswith(b'\x89PNG'):
+                                logger.info("✅ Иллюстрация сгенерирована (синхронно)")
+                                return self._save_temp_image_sync(image_data, part.inline_data.mime_type)
+
+            logger.warning("Не удалось сгенерировать изображение")
+            return None
+
+        except Exception as e:
+            logger.error(f"Ошибка генерации иллюстрации (синхронно): {e}")
+            return None
+
+    def _save_temp_image_sync(self, image_data: bytes, mime_type: str) -> Optional[str]:
+        """Синхронное сохранение изображения"""
+        try:
+            temp_dir = Path(settings.project_root) / "temp_images"
+            temp_dir.mkdir(exist_ok=True)
+
+            extension = ".png"
+            if mime_type and ("jpeg" in mime_type or "jpg" in mime_type):
+                extension = ".jpg"
+            elif mime_type and "webp" in mime_type:
+                extension = ".webp"
+
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            filename = f"gemini_generated_{timestamp}{extension}"
+            filepath = temp_dir / filename
+
+            with open(filepath, 'wb') as f:
+                f.write(image_data)
+
+            logger.info(f"💾 Изображение сохранено: {filepath}")
+            return str(filepath.absolute())
+
+        except Exception as e:
+            logger.error(f"Ошибка сохранения изображения: {e}")
+            return None
+
+    async def generate_illustration_threaded_async(
+        self,
+        scene_description: str,
+        characters: List[Dict],
+        book_title: str = "",
+        book_description: str = ""
+    ) -> Optional[str]:
+        """
+        Асинхронная обертка для параллельной генерации
+        Использует asyncio.to_thread() для неблокирующей работы
+        """
+        try:
+            logger.info(f"🚀 Запуск параллельной генерации иллюстрации")
+
+            # Запускаем синхронную функцию в отдельном потоке
+            result = await asyncio.to_thread(
+                self.generate_illustration_sync,
+                scene_description,
+                characters,
+                book_title
+            )
+
+            logger.info(f"✅ Параллельная генерация завершена")
+            return result
+
+        except Exception as e:
+            logger.error(f"Ошибка параллельной генерации: {e}")
+            return None
+
+    def generate_character_reference_data_sync(self, name: str, description: str) -> Optional[bytes]:
+        """
+        СИНХРОННАЯ генерация данных референса персонажа (БЕЗ сохранения в БД)
+        Переиспользует логику из generate_character_reference
+        """
+        try:
+            logger.info(f"🚀 Генерация референса для {name} (синхронно)")
+
+            # Строим промпт
+            reference_prompt = self._build_character_reference_prompt(name, description)
+
+            # Генерируем изображение СИНХРОННО
+            response = self.image_model.generate_content([reference_prompt])
+
+            if hasattr(response, 'candidates') and response.candidates:
+                candidate = response.candidates[0]
+                if hasattr(candidate, 'content') and candidate.content.parts:
+                    for part in candidate.content.parts:
+                        if hasattr(part, 'inline_data') and part.inline_data:
+                            image_data = part.inline_data.data
+
+                            if image_data.startswith(b'\x89PNG'):
+                                logger.info(f"✅ Референс для {name} сгенерирован")
+
+                                # Сжимаем и возвращаем (НЕ сохраняем в БД)
+                                compressed_image = self._compress_reference_image(image_data)
+                                return compressed_image
+
+            logger.warning(f"❌ Не удалось сгенерировать референс для {name}")
+            return None
+
+        except Exception as e:
+            logger.error(f"Ошибка генерации референса для {name}: {e}")
+            return None
+
+    async def generate_character_reference_data_threaded_async(self, name: str, description: str) -> Optional[bytes]:
+        """
+        Асинхронная обертка для параллельной генерации референса персонажа
+        Использует asyncio.to_thread() для неблокирующей работы
+        """
+        try:
+            logger.info(f"🚀 Запуск параллельной генерации референса для {name}")
+
+            # Запускаем синхронную функцию в отдельном потоке
+            result = await asyncio.to_thread(
+                self.generate_character_reference_data_sync,
+                name,
+                description
+            )
+
+            logger.info(f"✅ Параллельная генерация referencer завершена для {name}")
+            return result
+
+        except Exception as e:
+            logger.error(f"Ошибка параллельной генерации референса для {name}: {e}")
             return None
 
 # Глобальный экземпляр

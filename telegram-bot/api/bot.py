@@ -18,6 +18,7 @@ from utils.database import db
 from utils.ai_generator import ai_generator
 from utils.image_generator import image_generator
 from utils.character_analyzer import character_analyzer
+from utils.user_settings import user_settings_manager
 
 # Состояния разговора
 (
@@ -76,6 +77,12 @@ class StoryBot:
         # Основные команды
         self.application.add_handler(CommandHandler("start", self.start_command))
         self.application.add_handler(CommandHandler("help", self.help_command))
+        
+        # Секретные команды для настроек
+        self.application.add_handler(CommandHandler("chapter_size", self.chapter_size_command))
+        self.application.add_handler(CommandHandler("chapter_pics", self.chapter_pics_command))
+        self.application.add_handler(CommandHandler("settings", self.settings_command))
+        self.application.add_handler(CommandHandler("reset_settings", self.reset_settings_command))
         
         # Conversation handlers
         self.application.add_handler(create_book_conv)
@@ -400,15 +407,27 @@ class StoryBot:
                 return CREATE_CHARACTER_CLARIFICATION
             else:
                 # Описание достаточно полное
+                logger.debug(f"🔧 [DEBUG] Описание достаточно полное для {name}, уточнения не нужны")
                 full_description = description  # Используем как есть, если анализ показал что достаточно
                 context.user_data['current_character']['full_description'] = full_description
+                logger.debug(f"🔧 [DEBUG] full_description установлен для {name}")
                 
+                # Запускаем генерацию референса асинхронно (не дожидаемся результата)
+                logger.debug(f"🔧 [DEBUG] Запускаем THREADED start_async_reference_generation для {name} (без уточнений)")
+                await self.start_async_reference_generation_threaded(context, name, full_description)
+                logger.debug(f"🔧 [DEBUG] THREADED start_async_reference_generation завершен для {name} (без уточнений)")
+                
+                logger.debug(f"🔧 [DEBUG] Переходим к finish_character_creation для {name} (без уточнений)")
                 return await self.finish_character_creation(update, context)
                 
         except Exception as e:
             logger.error(f"Ошибка анализа персонажа: {e}")
             # Fallback - продолжаем с исходным описанием
             context.user_data['current_character']['full_description'] = description
+            
+            # Запускаем генерацию референса асинхронно (не дожидаемся результата)
+            await self.start_async_reference_generation_threaded(context, name, description)
+            
             return await self.finish_character_creation(update, context)
     
     async def handle_character_clarification(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -424,28 +443,26 @@ class StoryBot:
         name = context.user_data['current_character']['name']
         original_description = context.user_data['current_character']['original_description']
         
-        try:
-            # Создаем полное описание персонажа (без показа технического сообщения)
-            full_description = await character_analyzer.complete_character_description(
-                name, original_description, additional_info
-            )
-            
-            context.user_data['current_character']['full_description'] = full_description
-            
-            return await self.finish_character_creation(update, context)
-            
-        except Exception as e:
-            logger.error(f"Ошибка создания полного описания: {e}")
-            # Fallback - объединяем описания вручную
-            full_description = f"{original_description}. {additional_info}"
-            context.user_data['current_character']['full_description'] = full_description
-            
-            return await self.finish_character_creation(update, context)
+        # Объединяем описания простой конкатенацией (убираем блокирующий OpenAI вызов)
+        logger.debug(f"🔧 [DEBUG] Начинаем объединение описаний для {name}")
+        full_description = f"{original_description}. {additional_info}"
+        context.user_data['current_character']['full_description'] = full_description
+        logger.debug(f"🔧 [DEBUG] Описание объединено: {len(full_description)} символов")
+        
+        # Запускаем генерацию референса асинхронно (не дожидаемся результата)
+        logger.debug(f"🔧 [DEBUG] Запускаем THREADED start_async_reference_generation для {name}")
+        await self.start_async_reference_generation_threaded(context, name, full_description)
+        logger.debug(f"🔧 [DEBUG] THREADED start_async_reference_generation завершен для {name}")
+        
+        logger.debug(f"🔧 [DEBUG] Переходим к finish_character_creation для {name}")
+        return await self.finish_character_creation(update, context)
     
     async def finish_character_creation(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Завершение создания персонажа - сначала описание, потом портрет, потом кнопки"""
+        logger.debug(f"🔧 [DEBUG] finish_character_creation начато")
         char = context.user_data['current_character']
         context.user_data['characters'].append(char)
+        logger.debug(f"🔧 [DEBUG] Персонаж {char['name']} добавлен в список")
         
         char_count = len(context.user_data['characters'])
         
@@ -454,92 +471,125 @@ class StoryBot:
         text += f"👤 **{char['name']}**\n"
         text += f"📝 _{char['full_description']}_"
         
+        logger.debug(f"🔧 [DEBUG] Отправляем описание персонажа {char['name']}")
         await update.message.reply_text(text, parse_mode='Markdown')
+        logger.debug(f"🔧 [DEBUG] Описание персонажа отправлено")
         
-        # Генерируем портрет персонажа (в процессе создания, а не в конце)
-        await self.generate_character_portrait_and_buttons(update, context, char, char_count)
+        # Показываем кнопки навигации (портрет генерируется асинхронно в фоне)
+        logger.debug(f"🔧 [DEBUG] Показываем кнопки навигации для {char['name']}")
+        await self.show_character_creation_buttons(update, context, char, char_count)
+        logger.debug(f"🔧 [DEBUG] Кнопки навигации показаны для {char['name']}")
         
+        logger.debug(f"🔧 [DEBUG] finish_character_creation завершено, возвращаем ADD_MORE_CHARACTERS")
         return ADD_MORE_CHARACTERS
     
-    async def generate_character_portrait_and_buttons(self, update: Update, context: ContextTypes.DEFAULT_TYPE, char: Dict, char_count: int):
-        """Генерирует портрет персонажа и показывает кнопки навигации"""
+    async def start_async_reference_generation(self, context: ContextTypes.DEFAULT_TYPE, name: str, description: str):
+        """Запускаем асинхронную генерацию референса персонажа"""
         try:
-            # Показываем что генерируем портрет (краткая обратная связь)
-            portrait_msg = await update.message.reply_text("🎨 Создаю портрет...")
-            
-            # Генерируем портрет напрямую используя image_generator
-            # Создаем временный ID для персонажа (можно использовать имя)
-            temp_character_id = f"temp_{char['name']}_{char_count}"
-            
-            success = await image_generator.generate_character_reference(
-                character_id=temp_character_id,
-                name=char['name'],
-                description=char['full_description']
+            logger.debug(f"🔧 [DEBUG] start_async_reference_generation: создаем задачу для {name}")
+            # Запускаем полностью асинхронную генерацию референса (включая перевод)
+            reference_task = asyncio.create_task(
+                image_generator.generate_character_reference_data_fully_async(name, description)
             )
+            logger.debug(f"🔧 [DEBUG] start_async_reference_generation: задача создана для {name}")
             
-            await portrait_msg.delete()
+            # Инициализируем список pending_references если его нет
+            if 'pending_references' not in context.user_data:
+                context.user_data['pending_references'] = []
+                logger.debug(f"🔧 [DEBUG] start_async_reference_generation: инициализирован pending_references")
             
-            if success:
-                # Пытаемся получить и показать сгенерированный портрет
-                try:
-                    # Поскольку мы не сохраняем в БД, попробуем другой подход
-                    # Генерируем иллюстрацию через обычный генератор
-                    image_url = await image_generator.generate_illustration(
-                        scene_description=f"Character portrait: {char['full_description']}",
-                        characters=[],  # Пустой список, так как это сам персонаж
-                        book_title="Character Reference"
-                    )
-                    
-                    if image_url:
-                        if image_url.startswith('http'):
-                            # URL изображения (DALL-E)
-                            await update.message.reply_photo(
-                                photo=image_url,
-                                caption=f"✅ Портрет **{char['name']}** готов!",
-                                parse_mode='Markdown'
-                            )
-                        else:
-                            # Локальный файл (Gemini)
-                            with open(image_url, 'rb') as photo:
-                                await update.message.reply_photo(
-                                    photo=photo,
-                                    caption=f"✅ Портрет **{char['name']}** готов!",
-                                    parse_mode='Markdown'
-                                )
-                    
-                except Exception as img_error:
-                    logger.error(f"Ошибка при отображении портрета: {img_error}")
-                    # Продолжаем даже если изображение не показалось
+            # Добавляем задачу в список ожидающих
+            context.user_data['pending_references'].append({
+                'task': reference_task,
+                'name': name,
+                'description': description
+            })
+            logger.debug(f"🔧 [DEBUG] start_async_reference_generation: задача добавлена в pending_references для {name}")
             
-            # Показываем кнопки навигации ПОСЛЕ портрета
-            text = f"Всего персонажей: **{char_count}**\n\nЧто дальше?"
-            
-            keyboard = [
-                [InlineKeyboardButton("➕ Добавить еще персонажа", callback_data="add_character")],
-                [InlineKeyboardButton("✅ Закончить и создать книгу", callback_data="finish_characters")]
-            ]
-            
-            await update.message.reply_text(
-                text,
-                reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode='Markdown'
-            )
+            logger.info(f"🚀 Запущена асинхронная генерация референса для {name}")
+            logger.debug(f"🔧 [DEBUG] start_async_reference_generation: завершено для {name}")
             
         except Exception as e:
-            logger.error(f"Ошибка при генерации портрета персонажа: {e}")
-            # Показываем кнопки даже если портрет не удалось создать
-            text = f"Всего персонажей: **{char_count}**\n\nЧто дальше?"
-            
-            keyboard = [
-                [InlineKeyboardButton("➕ Добавить еще персонажа", callback_data="add_character")],
-                [InlineKeyboardButton("✅ Закончить и создать книгу", callback_data="finish_characters")]
-            ]
-            
-            await update.message.reply_text(
-                text,
-                reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode='Markdown'
+            logger.error(f"Ошибка при запуске асинхронной генерации референса для {name}: {e}")
+    
+    async def start_async_reference_generation_threaded(self, context: ContextTypes.DEFAULT_TYPE, name: str, description: str):
+        """Запускаем ПРАВИЛЬНО асинхронную генерацию референса персонажа с использованием asyncio.to_thread()"""
+        try:
+            logger.debug(f"🔧 [DEBUG] start_async_reference_generation_threaded: создаем задачу для {name}")
+            # Запускаем ПРАВИЛЬНО асинхронную генерацию референса в отдельном потоке
+            reference_task = asyncio.create_task(
+                image_generator.generate_character_reference_data_threaded_async(name, description)
             )
+            logger.debug(f"🔧 [DEBUG] start_async_reference_generation_threaded: задача создана для {name}")
+            
+            # Инициализируем список pending_references если его нет
+            if 'pending_references' not in context.user_data:
+                context.user_data['pending_references'] = []
+                logger.debug(f"🔧 [DEBUG] start_async_reference_generation_threaded: инициализирован pending_references")
+            
+            # Добавляем задачу в список ожидающих
+            context.user_data['pending_references'].append({
+                'task': reference_task,
+                'name': name,
+                'description': description
+            })
+            logger.debug(f"🔧 [DEBUG] start_async_reference_generation_threaded: задача добавлена в pending_references для {name}")
+            
+            logger.info(f"🚀 Запущена THREADED асинхронная генерация референса для {name}")
+            logger.debug(f"🔧 [DEBUG] start_async_reference_generation_threaded: завершено для {name}")
+            
+        except Exception as e:
+            logger.error(f"Ошибка при запуске THREADED асинхронной генерации референса для {name}: {e}")
+    
+    async def show_character_creation_buttons(self, update: Update, context: ContextTypes.DEFAULT_TYPE, char: Dict, char_count: int):
+        """Показываем кнопки навигации после создания персонажа"""
+        logger.debug(f"🔧 [DEBUG] show_character_creation_buttons: начато для {char['name']}")
+        text = f"Всего персонажей: **{char_count}**\n\n"
+        text += f"🎨 Портрет для **{char['name']}** создается в фоне...\n\n"
+        text += f"Что дальше?"
+        
+        keyboard = [
+            [InlineKeyboardButton("➕ Добавить еще персонажа", callback_data="add_character")],
+            [InlineKeyboardButton("✅ Закончить и создать книгу", callback_data="finish_characters")]
+        ]
+        
+        logger.debug(f"🔧 [DEBUG] show_character_creation_buttons: отправляем кнопки для {char['name']}")
+        await update.message.reply_text(
+            text,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='Markdown'
+        )
+        logger.debug(f"🔧 [DEBUG] show_character_creation_buttons: кнопки отправлены для {char['name']}")
+    
+    async def send_final_book_creation_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE, book: Dict, references_created: int):
+        """Отправляем финальное сообщение о создании книги с кнопками навигации"""
+        char_count = len(context.user_data['characters'])
+        characters_list = "\n".join([f"• {char['name']}" for char in context.user_data['characters']])
+        
+        text = f"🎉 **Книга создана!**\n\n"
+        text += f"📖 **{context.user_data['book_title']}**\n"
+        text += f"💭 _{context.user_data['book_description']}_\n\n"
+        text += f"👥 **Персонажи ({char_count}):**\n{characters_list}\n\n"
+        
+        # Добавляем информацию о референсах
+        if references_created > 0:
+            text += f"🎨 **Портреты готовы:** {references_created}/{char_count}\n\n"
+            text += f"Теперь иллюстрации будут более консистентными! ✨\n\n"
+        
+        text += f"Теперь можно начинать писать первую главу! ✍️"
+        
+        keyboard = [
+            [InlineKeyboardButton("✍️ Написать первую главу", callback_data=f"create_chapter_{book['id']}")],
+            [InlineKeyboardButton("📚 Мои книги", callback_data="my_books")],
+            [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]
+        ]
+        
+        # Отправляем новое сообщение (не редактируем старое)
+        await update.callback_query.message.reply_text(
+            text,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='Markdown'
+        )
     
     async def add_more_characters(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Добавить еще персонажа"""
@@ -576,60 +626,62 @@ class StoryBot:
                 )
                 created_characters.append(character)
             
-            # Генерируем референсы для всех персонажей (без показа технического сообщения)
+            # Дожидаемся завершения всех асинхронных задач генерации референсов
             references_created = 0
-            for i, character in enumerate(created_characters):
-                char_data = context.user_data['characters'][i]
+            if 'pending_references' in context.user_data and context.user_data['pending_references']:
+                logger.info(f"🔄 Дожидаемся завершения {len(context.user_data['pending_references'])} задач генерации референсов")
                 
-                # Генерируем референс
-                success = await image_generator.generate_character_reference(
-                    character_id=character['id'],
-                    name=character['name'],
-                    description=char_data['full_description']
+                # Показываем сообщение о процессе
+                progress_msg = await update.callback_query.message.reply_text(
+                    "🎨 Завершаю создание портретов персонажей..."
                 )
                 
-                if success:
-                    references_created += 1
+                for i, pending in enumerate(context.user_data['pending_references']):
+                    try:
+                        # Дожидаемся готовности референса
+                        reference_data = await pending['task']
+                        character = created_characters[i]
+                        
+                        if reference_data:
+                            # Сохраняем готовые данные в БД
+                            success = await db.save_character_reference_data(
+                                character['id'], 
+                                reference_data, 
+                                pending['description']
+                            )
+                            
+                            if success:
+                                references_created += 1
+                                
+                                # Показываем референс пользователю
+                                await update.callback_query.message.reply_photo(
+                                    photo=BytesIO(reference_data),
+                                    caption=f"✅ Портрет **{character['name']}** готов!",
+                                    parse_mode='Markdown'
+                                )
+                            else:
+                                logger.warning(f"Не удалось сохранить референс для {character['name']}")
+                        else:
+                            logger.warning(f"Референс для {pending['name']} не был сгенерирован")
+                            
+                    except Exception as e:
+                        logger.error(f"Ошибка при обработке referens-задачи для {pending['name']}: {e}")
+                
+                # Удаляем сообщение о прогрессе
+                try:
+                    await progress_msg.delete()
+                except:
+                    pass
+                
+                # Добавляем финальное сообщение с кнопками ПОСЛЕ всех портретов
+                await self.send_final_book_creation_message(update, context, book, references_created)
                     
-                    # Показываем референс пользователю
-                    reference_image = await db.get_character_reference(character['id'])
-                    if reference_image:
-                        await update.callback_query.message.reply_photo(
-                            photo=BytesIO(reference_image),
-                            caption=f"✅ Портрет **{character['name']}** готов!",
-                            parse_mode='Markdown'
-                        )
-                else:
-                    await update.callback_query.message.reply_text(
-                        f"⚠️ Не удалось создать портрет для {character['name']}, но это не критично."
-                    )
-            
-            char_count = len(context.user_data['characters'])
-            characters_list = "\n".join([f"• {char['name']}" for char in context.user_data['characters']])
-            
-            text = f"🎉 **Книга создана!**\n\n"
-            text += f"📖 **{context.user_data['book_title']}**\n"
-            text += f"💭 _{context.user_data['book_description']}_\n\n"
-            text += f"👥 **Персонажи ({char_count}):**\n{characters_list}\n\n"
-            
-            # Добавляем информацию о референсах
-            if references_created > 0:
-                text += f"🎨 **Портреты готовы:** {references_created}/{char_count}\n\n"
-                text += f"Теперь иллюстрации будут более консистентными! ✨\n\n"
-            
-            text += f"Теперь можно начинать писать первую главу! ✍️"
-            
-            keyboard = [
-                [InlineKeyboardButton("✍️ Написать первую главу", callback_data=f"create_chapter_{book['id']}")],
-                [InlineKeyboardButton("📚 Мои книги", callback_data="my_books")],
-                [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]
-            ]
-            
-            await update.callback_query.edit_message_text(
-                text,
-                reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode='Markdown'
-            )
+                # Очищаем список ожидающих задач
+                context.user_data['pending_references'] = []
+            else:
+                logger.info("ℹ️ Нет pending задач генерации референсов")
+                # Отправляем финальное сообщение даже если нет pending задач
+                await self.send_final_book_creation_message(update, context, book, references_created)
             
             # Очищаем данные
             context.user_data.clear()
@@ -788,6 +840,12 @@ class StoryBot:
             
             next_chapter_num = len(chapters) + 1
             
+            # Получаем настройки пользователя
+            user_id = update.effective_user.id if update.effective_user else update.callback_query.from_user.id
+            user_settings = await user_settings_manager.get_user_settings(user_id)
+            
+            logger.info(f"Используем настройки пользователя {user_id}: размер главы {user_settings.chapter_size} слов, {user_settings.chapter_pics} иллюстраций")
+            
             # Генерируем главу с помощью OpenAI (без показа технического сообщения)
             generated_chapter = await ai_generator.generate_chapter(
                 book_title=book['title'],
@@ -795,7 +853,7 @@ class StoryBot:
                 characters=characters,
                 previous_chapters=chapters,
                 chapter_hint=hint,
-                word_count=settings.default_chapter_length
+                word_count=user_settings.chapter_size
             )
             
             # Сохраняем главу в БД
@@ -837,13 +895,15 @@ class StoryBot:
                 await update.message.reply_text(text, parse_mode='Markdown')
                 user_id = update.message.from_user.id
             
-            # Генерируем и показываем иллюстрацию
-            await self.generate_and_send_illustration(
+            # Генерируем и показываем иллюстрации (количество зависит от настроек пользователя)
+            await self.generate_and_send_illustrations(
                 user_id, 
                 generated_chapter['illustration_prompt'],
+                generated_chapter['content'],
                 characters,
                 book['title'],
-                chapter['id']
+                chapter['id'],
+                user_settings.chapter_pics
             )
             
             # ПОСЛЕ иллюстрации показываем кнопки навигации
@@ -935,6 +995,135 @@ class StoryBot:
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]])
             )
     
+    async def generate_and_send_illustrations(
+        self,
+        user_id: int,
+        original_prompt: str,
+        chapter_content: str,
+        characters: List[Dict],
+        book_title: str,
+        chapter_id: str,
+        num_illustrations: int = 1
+    ):
+        """Генерируем и отправляем множественные иллюстрации пользователю (ПАРАЛЛЕЛЬНО)"""
+        try:
+            # Генерируем промпты для всех иллюстраций
+            illustration_prompts = await ai_generator.generate_illustration_prompts(
+                chapter_content=chapter_content,
+                characters=characters,
+                book_title=book_title,
+                num_illustrations=num_illustrations
+            )
+
+            logger.info(f"🚀 Запускаем ПАРАЛЛЕЛЬНУЮ генерацию {len(illustration_prompts)} иллюстраций для пользователя {user_id}")
+
+            # Показываем прогресс
+            if num_illustrations > 1:
+                progress_text = f"🎨 Создаю {num_illustrations} иллюстрации параллельно..."
+                await self.application.bot.send_message(
+                    chat_id=user_id,
+                    text=progress_text
+                )
+
+            # ПАРАЛЛЕЛЬНАЯ генерация всех иллюстраций
+            tasks = []
+            for i, prompt in enumerate(illustration_prompts):
+                task = asyncio.create_task(
+                    image_generator.generate_illustration_threaded_async(
+                        scene_description=prompt,
+                        characters=characters,
+                        book_title=book_title
+                    )
+                )
+                tasks.append((i, prompt, task))
+
+            # Дожидаемся завершения всех задач
+            logger.info(f"⏳ Ожидаем завершения {len(tasks)} параллельных задач генерации...")
+            results = await asyncio.gather(*[task for _, _, task in tasks], return_exceptions=True)
+
+            # Обрабатываем и отправляем результаты
+            successful_illustrations = 0
+            for (i, prompt, _), result in zip(tasks, results):
+                try:
+                    # Проверяем на ошибки
+                    if isinstance(result, Exception):
+                        logger.error(f"Ошибка при генерации иллюстрации {i+1}: {result}")
+                        continue
+
+                    image_url = result
+
+                    if image_url:
+                        # Определяем тип изображения и отправляем соответственно
+                        if image_url.startswith('http'):
+                            # URL изображения (DALL-E)
+                            photo_source = image_url
+                            logger.info(f"Отправляем изображение {i+1} по URL (DALL-E)")
+                        else:
+                            # Локальный файл (Gemini)
+                            photo_source = open(image_url, 'rb')
+                            logger.info(f"Отправляем локальный файл {i+1} (Gemini): {image_url}")
+
+                        try:
+                            # Отправляем изображение
+                            caption = f"🎨 **Иллюстрация {i+1}**"
+                            if num_illustrations > 1:
+                                caption += f" из {num_illustrations}"
+                            caption += f"\n\n📖 _{prompt}_"
+
+                            await self.application.bot.send_photo(
+                                chat_id=user_id,
+                                photo=photo_source,
+                                caption=caption,
+                                parse_mode='Markdown'
+                            )
+
+                            successful_illustrations += 1
+                            logger.info(f"✅ Иллюстрация {i+1}/{num_illustrations} отправлена")
+
+                        finally:
+                            # Закрываем файл если он был открыт
+                            if hasattr(photo_source, 'close'):
+                                photo_source.close()
+
+                        # Сохраняем URL первой иллюстрации в базу данных (для совместимости)
+                        if i == 0:
+                            await db.update_chapter_illustration(chapter_id, image_url)
+                            logger.info(f"Первая иллюстрация сохранена для главы {chapter_id}")
+
+                    else:
+                        logger.warning(f"Не удалось сгенерировать иллюстрацию {i+1}")
+
+                except Exception as img_error:
+                    logger.error(f"Ошибка при обработке иллюстрации {i+1}: {img_error}")
+                    continue
+
+            # Показываем итоговую статистику
+            if successful_illustrations > 0:
+                if num_illustrations == 1:
+                    logger.info(f"✅ Иллюстрация успешно создана для пользователя {user_id}")
+                else:
+                    await self.application.bot.send_message(
+                        chat_id=user_id,
+                        text=f"✅ Готово! Создано {successful_illustrations} из {num_illustrations} иллюстраций"
+                    )
+                    logger.info(f"✅ {successful_illustrations}/{num_illustrations} иллюстраций созданы ПАРАЛЛЕЛЬНО для пользователя {user_id}")
+            else:
+                # Если не удалось сгенерировать ни одной иллюстрации
+                await self.application.bot.send_message(
+                    chat_id=user_id,
+                    text="😔 Не удалось сгенерировать иллюстрации. Попробую еще раз позже!"
+                )
+
+        except Exception as e:
+            logger.error(f"Ошибка при параллельной генерации иллюстраций для пользователя {user_id}: {e}")
+            try:
+                await self.application.bot.send_message(
+                    chat_id=user_id,
+                    text="😔 Произошла ошибка при создании иллюстраций."
+                )
+            except:
+                pass  # Игнорируем ошибки отправки сообщений об ошибках
+
     async def generate_and_send_illustration(
         self, 
         user_id: int, 
@@ -996,6 +1185,81 @@ class StoryBot:
                 )
             except:
                 pass  # Игнорируем ошибки отправки сообщений об ошибках
+    
+    # === СЕКРЕТНЫЕ КОМАНДЫ НАСТРОЕК ===
+    
+    async def chapter_size_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Команда для установки размера глав"""
+        user_id = update.effective_user.id
+        
+        # Проверяем аргументы команды
+        if not context.args:
+            await update.message.reply_text(
+                "📏 **Установка размера главы**\n\n"
+                "Использование: `/chapter_size <число>`\n"
+                "Диапазон: 200-1200 слов\n\n"
+                "💡 Примеры:\n"
+                "• `/chapter_size 400` - короткие главы\n"
+                "• `/chapter_size 600` - средние главы\n"
+                "• `/chapter_size 900` - длинные главы",
+                parse_mode='Markdown'
+            )
+            return
+        
+        try:
+            size = int(context.args[0])
+            success, message = await user_settings_manager.set_chapter_size(user_id, size)
+            await update.message.reply_text(message)
+        except ValueError:
+            await update.message.reply_text("❌ Укажи число. Например: `/chapter_size 600`")
+    
+    async def chapter_pics_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Команда для установки количества иллюстраций"""
+        user_id = update.effective_user.id
+        
+        # Проверяем аргументы команды
+        if not context.args:
+            await update.message.reply_text(
+                "🎨 **Установка количества иллюстраций**\n\n"
+                "Использование: `/chapter_pics <число>`\n"
+                "Диапазон: 1-3 иллюстрации\n\n"
+                "💡 Примеры:\n"
+                "• `/chapter_pics 1` - одна иллюстрация\n"
+                "• `/chapter_pics 2` - две иллюстрации\n"
+                "• `/chapter_pics 3` - три иллюстрации",
+                parse_mode='Markdown'
+            )
+            return
+        
+        try:
+            pics = int(context.args[0])
+            success, message = await user_settings_manager.set_chapter_pics(user_id, pics)
+            await update.message.reply_text(message)
+        except ValueError:
+            await update.message.reply_text("❌ Укажи число. Например: `/chapter_pics 2`")
+    
+    async def settings_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показать текущие настройки"""
+        user_id = update.effective_user.id
+        
+        try:
+            settings = await user_settings_manager.get_user_settings(user_id)
+            message = user_settings_manager.format_settings_message(settings)
+            await update.message.reply_text(message, parse_mode='Markdown')
+        except Exception as e:
+            logger.error(f"Ошибка получения настроек для пользователя {user_id}: {e}")
+            await update.message.reply_text("❌ Произошла ошибка при загрузке настроек")
+    
+    async def reset_settings_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Сбросить настройки к значениям по умолчанию"""
+        user_id = update.effective_user.id
+        
+        try:
+            success, message = await user_settings_manager.reset_settings(user_id)
+            await update.message.reply_text(message)
+        except Exception as e:
+            logger.error(f"Ошибка сброса настроек для пользователя {user_id}: {e}")
+            await update.message.reply_text("❌ Произошла ошибка при сбросе настроек")
     
     async def cancel_conversation(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Отмена текущего разговора"""
