@@ -100,9 +100,8 @@ export function CharacterDetailPage() {
       const result = await generateCharacterImage(characterId, name, description);
       
       if (result.image_url) {
-        // Add cache-busting timestamp to force reload
-        const imageUrlWithCacheBust = `${result.image_url}?t=${Date.now()}`;
-        const updatedChar = { ...character, image_url: imageUrlWithCacheBust };
+        // URL is now unique (contains timestamp), no cache-busting needed
+        const updatedChar = { ...character, image_url: result.image_url };
         setCharacter(updatedChar);
         setCharacters(characters.map(c => c.id === characterId ? updatedChar : c));
         hapticFeedback.success();

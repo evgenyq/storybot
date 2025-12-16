@@ -126,14 +126,15 @@ Create a small, simple character reference image. Basic cartoon portrait, minima
     const { imageData, mimeType } = result;
     console.log(`Image generated: ${imageData.length} bytes, ${mimeType}`);
 
-    // Upload to Supabase Storage
-    const fileName = `characters/${character_id}.png`;
+    // Upload to Supabase Storage with unique filename (timestamp for cache-busting)
+    const timestamp = Date.now();
+    const fileName = `characters/${character_id}_${timestamp}.png`;
     
     const { error: uploadError } = await supabase.storage
       .from('images')
       .upload(fileName, imageData, {
         contentType: mimeType,
-        upsert: true,
+        upsert: false, // Always create new file
       });
 
     if (uploadError) {
