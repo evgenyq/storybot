@@ -34,7 +34,7 @@
 
 .content {
   padding: var(--spacing-md);
-  padding-bottom: 240px; /* Space for footer + tab bar */
+  padding-bottom: var(--spacing-lg);
 }
 
 .emptyChapters {
@@ -109,13 +109,8 @@
 }
 
 .footer {
-  position: fixed;
-  bottom: var(--tab-bar-height);
-  left: 0;
-  right: 0;
-  padding: var(--spacing-md);
-  padding-bottom: calc(var(--spacing-md) + var(--safe-area-bottom));
-  background: linear-gradient(to top, var(--color-background) 80%, transparent);
+  padding: var(--spacing-lg) var(--spacing-md);
+  padding-bottom: calc(var(--spacing-xl) + var(--safe-area-bottom));
 }
 
 .actions {

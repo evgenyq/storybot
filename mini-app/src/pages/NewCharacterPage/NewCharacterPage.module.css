@@ -25,7 +25,7 @@
 .content {
   flex: 1;
   padding: var(--spacing-lg) var(--spacing-md);
-  padding-bottom: 180px; /* Space for footer + tab bar */
+  padding-bottom: 120px; /* Space for footer */
 }
 
 .form {
@@ -92,7 +92,7 @@
 
 .footer {
   position: fixed;
-  bottom: var(--tab-bar-height);
+  bottom: 0;
   left: 0;
   right: 0;
   padding: var(--spacing-md);

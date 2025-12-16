@@ -1,11 +1,34 @@
 import { useEffect, useState } from 'react';
-import { BrowserRouter } from 'react-router-dom';
+import { BrowserRouter, useLocation } from 'react-router-dom';
 import { AppRouter } from './router';
 import { TabBar } from '../components/ui';
 import { FullPageLoader } from '../components/ui/Loader';
 import { useTelegram, useStore } from '../shared/hooks';
 import { getOrCreateUser } from '../shared/api';
 import '../styles/global.css';
+
+// Pages where TabBar should be hidden
+const HIDE_TAB_BAR_PATTERNS = [
+  /^\/book\/.+/,      // Book reader and related pages
+  /^\/new-book/,      // New book creation
+  /^\/new-character/, // New character creation
+];
+
+function shouldShowTabBar(pathname: string): boolean {
+  return !HIDE_TAB_BAR_PATTERNS.some(pattern => pattern.test(pathname));
+}
+
+function AppContent() {
+  const location = useLocation();
+  const showTabBar = shouldShowTabBar(location.pathname);
+
+  return (
+    <>
+      <AppRouter />
+      {showTabBar && <TabBar />}
+    </>
+  );
+}
 
 export function App() {
   const { isReady, user: telegramUser } = useTelegram();
@@ -59,8 +82,7 @@ export function App() {
 
   return (
     <BrowserRouter>
-      <AppRouter />
-      <TabBar />
+      <AppContent />
     </BrowserRouter>
   );
 }
