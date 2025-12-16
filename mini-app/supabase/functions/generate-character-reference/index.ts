@@ -1,8 +1,9 @@
 // Supabase Edge Function: Generate Character Reference Image
-// Uses Google Gemini for image generation
+// Uses Google Gemini for image generation, stores in Supabase Storage
 
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { decode as base64Decode } from 'https://deno.land/std@0.168.0/encoding/base64.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -30,19 +31,18 @@ serve(async (req) => {
     
     const { character_id, name, description }: GenerateCharacterRequest = await req.json();
 
-    // Build prompt for character reference
-    const prompt = `Create a simple character portrait for a children's book.
+    console.log(`Generating reference for character: ${name}`);
 
-Character: ${name}
-Description: ${description}
+    // Build prompt for character reference (similar to Python bot)
+    const prompt = `Simple Disney-Pixar character portrait, minimalist 2D cartoon style, basic rounded features.
 
-Style requirements:
-- Disney-Pixar cartoon style
-- Simple 2D illustration
-- Bright, cheerful colors
-- Friendly expression
+${description}
+
+Create a small, simple character reference image. Basic cartoon portrait, minimal details, clean style.
+- Portrait/bust shot of the character
 - White or simple solid background
-- Portrait/bust shot
+- Friendly expression, big eyes
+- Bright, cheerful colors
 - No text or words in image
 - Safe and appropriate for children ages 5-10`;
 
@@ -65,20 +65,46 @@ Style requirements:
     
     // Extract image from response
     const parts = data.candidates?.[0]?.content?.parts || [];
-    let imageUrl: string | null = null;
+    let imageData: Uint8Array | null = null;
+    let mimeType = 'image/png';
 
     for (const part of parts) {
       if (part.inlineData?.mimeType?.startsWith('image/')) {
-        // TODO: Upload to Supabase Storage
-        // For now, store as base64 data URL
-        imageUrl = `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
+        // Decode base64 to bytes
+        imageData = base64Decode(part.inlineData.data);
+        mimeType = part.inlineData.mimeType;
+        console.log(`Image generated: ${imageData.length} bytes, ${mimeType}`);
         break;
       }
     }
 
-    if (!imageUrl) {
-      throw new Error('Failed to generate image');
+    if (!imageData) {
+      console.error('No image in Gemini response:', JSON.stringify(data).substring(0, 500));
+      throw new Error('Failed to generate image - no image in response');
     }
+
+    // Upload to Supabase Storage
+    const fileName = `characters/${character_id}.png`;
+    
+    const { error: uploadError } = await supabase.storage
+      .from('images')
+      .upload(fileName, imageData, {
+        contentType: mimeType,
+        upsert: true, // Overwrite if exists
+      });
+
+    if (uploadError) {
+      console.error('Storage upload error:', uploadError);
+      throw new Error(`Failed to upload image: ${uploadError.message}`);
+    }
+
+    // Get public URL
+    const { data: urlData } = supabase.storage
+      .from('images')
+      .getPublicUrl(fileName);
+
+    const imageUrl = urlData.publicUrl;
+    console.log(`Image uploaded: ${imageUrl}`);
 
     // Update character with image URL
     const { error: updateError } = await supabase
@@ -88,7 +114,10 @@ Style requirements:
 
     if (updateError) {
       console.error('Failed to update character:', updateError);
+      throw new Error(`Failed to update character: ${updateError.message}`);
     }
+
+    console.log(`Character ${name} reference saved successfully`);
 
     return new Response(
       JSON.stringify({ 
@@ -111,4 +140,3 @@ Style requirements:
     );
   }
 });
-
