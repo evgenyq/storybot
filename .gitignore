@@ -69,3 +69,9 @@ Thumbs.db
 secrets.json
 credentials.json
 service-account-*.json
+
+# Node.js (Mini App)
+node_modules/
+mini-app/dist/
+mini-app/.env.local
+*.tsbuildinfo

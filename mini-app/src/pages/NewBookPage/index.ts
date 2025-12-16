@@ -1,0 +1,2 @@
+export { NewBookPage } from './NewBookPage';
+

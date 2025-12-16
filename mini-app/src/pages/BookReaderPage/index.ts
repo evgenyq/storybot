@@ -1,0 +1,2 @@
+export { BookReaderPage } from './BookReaderPage';
+

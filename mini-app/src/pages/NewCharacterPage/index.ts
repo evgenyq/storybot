@@ -1,0 +1,2 @@
+export { NewCharacterPage } from './NewCharacterPage';
+
