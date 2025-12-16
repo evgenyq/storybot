@@ -34,7 +34,7 @@
 
 .content {
   padding: var(--spacing-md);
-  padding-bottom: 180px; /* Space for footer */
+  padding-bottom: 240px; /* Space for footer + tab bar */
 }
 
 .emptyChapters {
@@ -110,7 +110,7 @@
 
 .footer {
   position: fixed;
-  bottom: 0;
+  bottom: var(--tab-bar-height);
   left: 0;
   right: 0;
   padding: var(--spacing-md);

@@ -166,7 +166,33 @@ export function BookReaderPage() {
   );
 }
 
+// Clean markdown and extract content without title duplication
+function cleanChapterContent(content: string): string[] {
+  let text = content;
+  
+  // Remove markdown bold **text**
+  text = text.replace(/\*\*(.*?)\*\*/g, '$1');
+  
+  // Remove markdown headers ## or ###
+  text = text.replace(/^#{1,3}\s+/gm, '');
+  
+  // Split into paragraphs
+  const paragraphs = text.split('\n').filter(p => p.trim());
+  
+  // Remove first paragraph if it looks like a chapter title
+  if (paragraphs.length > 0) {
+    const firstPara = paragraphs[0].toLowerCase();
+    if (firstPara.includes('глава') && firstPara.length < 100) {
+      paragraphs.shift();
+    }
+  }
+  
+  return paragraphs;
+}
+
 function ChapterContent({ chapter }: { chapter: ChapterWithIllustrations }) {
+  const paragraphs = cleanChapterContent(chapter.content);
+  
   return (
     <article className={styles.chapter}>
       <h2 className={styles.chapterTitle}>
@@ -184,8 +210,8 @@ function ChapterContent({ chapter }: { chapter: ChapterWithIllustrations }) {
       )}
 
       <div className={styles.chapterText}>
-        {chapter.content.split('\n').map((paragraph, i) => (
-          paragraph.trim() && <p key={i}>{paragraph}</p>
+        {paragraphs.map((paragraph, i) => (
+          <p key={i}>{paragraph}</p>
         ))}
       </div>
 
