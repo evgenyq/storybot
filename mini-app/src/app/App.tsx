@@ -9,9 +9,10 @@ import '../styles/global.css';
 
 // Pages where TabBar should be hidden
 const HIDE_TAB_BAR_PATTERNS = [
-  /^\/book\/.+/,      // Book reader and related pages
-  /^\/new-book/,      // New book creation
-  /^\/new-character/, // New character creation
+  /^\/book\/.+/,        // Book reader and related pages
+  /^\/new-book/,        // New book creation
+  /^\/character\/.+/,   // Character detail page
+  /^\/new-character/,   // New character creation
 ];
 
 function shouldShowTabBar(pathname: string): boolean {

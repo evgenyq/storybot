@@ -15,6 +15,12 @@ declare global {
         ready: () => void;
         expand: () => void;
         close: () => void;
+        showConfirm: (message: string, callback: (confirmed: boolean) => void) => void;
+        showPopup: (params: {
+          title?: string;
+          message: string;
+          buttons?: Array<{ id?: string; type?: 'default' | 'ok' | 'close' | 'cancel' | 'destructive'; text: string }>;
+        }, callback?: (buttonId: string) => void) => void;
         MainButton: {
           text: string;
           color: string;
@@ -150,6 +156,27 @@ export function useTelegram() {
     window.Telegram?.WebApp?.close();
   };
 
+  const showConfirm = (title: string, message: string): Promise<boolean> => {
+    return new Promise((resolve) => {
+      const tg = window.Telegram?.WebApp;
+      if (tg?.showPopup) {
+        tg.showPopup({
+          title,
+          message,
+          buttons: [
+            { id: 'cancel', type: 'cancel', text: 'Отмена' },
+            { id: 'confirm', type: 'destructive', text: 'Удалить' },
+          ],
+        }, (buttonId) => {
+          resolve(buttonId === 'confirm');
+        });
+      } else {
+        // Fallback for development
+        resolve(window.confirm(`${title}\n\n${message}`));
+      }
+    });
+  };
+
   return {
     isReady,
     user,
@@ -157,6 +184,7 @@ export function useTelegram() {
     mainButton,
     backButton,
     close,
+    showConfirm,
     webApp: window.Telegram?.WebApp,
   };
 }
