@@ -28,8 +28,9 @@ export function CharactersPage() {
     loadCharacters();
   }, [user, setCharacters]);
 
-  const handleCharacterClick = (characterId: string) => {
-    navigate(`/character/${characterId}`);
+  const handleCharacterClick = (_characterId: string) => {
+    // TODO: Add character detail/edit page
+    // For now, do nothing on click
   };
 
   const handleNewCharacter = () => {

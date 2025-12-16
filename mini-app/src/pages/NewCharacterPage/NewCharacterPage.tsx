@@ -63,7 +63,7 @@ export function NewCharacterPage() {
 
       addCharacter(character);
       hapticFeedback.success();
-      navigate(-1);
+      navigate('/characters');
     } catch (error) {
       console.error('Failed to create character:', error);
       hapticFeedback.error();
