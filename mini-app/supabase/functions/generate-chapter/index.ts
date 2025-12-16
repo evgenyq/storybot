@@ -1,13 +1,22 @@
 // Supabase Edge Function: Generate Chapter with Illustrations
-// Uses OpenAI GPT for text, OpenAI DALL-E for images
+// Uses OpenAI GPT for text, Google Gemini (Nano Banana) for images
 
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { decode as base64Decode, encode as base64Encode } from 'https://deno.land/std@0.168.0/encoding/base64.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
+
+// Try different model names - Google keeps renaming them
+const MODEL_NAMES = [
+  'gemini-2.0-flash-preview-image-generation',  // Nano Banana current name
+  'gemini-2.5-flash-preview-image-generation',  // Possible new name
+  'gemini-2.0-flash-exp-image-generation',      // Alternative
+  'gemini-2.0-flash-exp',                        // Old name
+];
 
 interface GenerateChapterRequest {
   book_id: string;
@@ -30,6 +39,7 @@ serve(async (req) => {
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
     const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
     const openaiKey = Deno.env.get('OPENAI_API_KEY')!;
+    const googleKey = Deno.env.get('GOOGLE_API_KEY')!;
 
     const supabase = createClient(supabaseUrl, supabaseKey);
     
@@ -101,7 +111,7 @@ ${hint ? `Подсказка для этой главы: ${hint}` : 'Приду�
 - Закончи главу интригующе, чтобы хотелось читать дальше
 
 В конце добавь строку в формате:
-[ИЛЛЮСТРАЦИЯ: краткое описание ключевой сцены для иллюстрации на английском языке]`;
+[ИЛЛЮСТРАЦИЯ: краткое описание ключевой сцены для иллюстрации]`;
 
     const openaiResponse = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
@@ -131,7 +141,7 @@ ${hint ? `Подсказка для этой главы: ${hint}` : 'Приду�
 
     // Extract illustration prompt
     const illustrationMatch = chapterContent.match(/\[ИЛЛЮСТРАЦИЯ:\s*([^\]]+)\]/i);
-    const illustrationPrompt = illustrationMatch?.[1] || `scene from chapter ${nextChapterNum} of children's book "${book.title}"`;
+    const illustrationPrompt = illustrationMatch?.[1] || `сцена из главы ${nextChapterNum} книги "${book.title}"`;
     
     // Remove illustration tag from content
     chapterContent = chapterContent.replace(/\[ИЛЛЮСТРАЦИЯ:[^\]]+\]/gi, '').trim();
@@ -158,25 +168,24 @@ ${hint ? `Подсказка для этой главы: ${hint}` : 'Приду�
 
     console.log(`Chapter saved: ${chapter.id}`);
 
-    // ============ STEP 3: Generate illustrations with DALL-E ============
+    // ============ STEP 3: Generate illustrations ============
     
     const illustrations: any[] = [];
     
-    // Build character descriptions for DALL-E
-    const characterDescriptions = characters
-      .map(c => `${c.name}: ${c.description || ''}`)
-      .join('. ')
-      .substring(0, 300);
+    // Fetch character reference images for Gemini
+    const characterReferences = await fetchCharacterReferences(characters);
+    console.log(`Loaded ${characterReferences.length} character references`);
 
     for (let i = 0; i < settings.images_per_chapter; i++) {
       try {
         console.log(`Generating illustration ${i + 1}/${settings.images_per_chapter}`);
         
         const imageUrl = await generateIllustration(
-          openaiKey,
+          googleKey,
           supabase,
           illustrationPrompt,
-          characterDescriptions,
+          characters,
+          characterReferences,
           book.title,
           chapter.id,
           i
@@ -235,75 +244,170 @@ ${hint ? `Подсказка для этой главы: ${hint}` : 'Приду�
   }
 });
 
-// Generate illustration using DALL-E
+// Fetch character reference images from their URLs
+async function fetchCharacterReferences(
+  characters: Character[]
+): Promise<{ name: string; description: string; imageBase64: string }[]> {
+  const references: { name: string; description: string; imageBase64: string }[] = [];
+  
+  for (const char of characters) {
+    if (!char.image_url) continue;
+    
+    try {
+      const response = await fetch(char.image_url);
+      if (!response.ok) continue;
+      
+      const imageBuffer = await response.arrayBuffer();
+      const imageBase64 = base64Encode(new Uint8Array(imageBuffer));
+      
+      references.push({
+        name: char.name,
+        description: char.description || '',
+        imageBase64,
+      });
+    } catch (e) {
+      console.error(`Failed to fetch reference for ${char.name}:`, e);
+    }
+  }
+  
+  return references;
+}
+
+// Try to generate image with different Gemini models
+async function tryGenerateImageWithGemini(
+  googleKey: string,
+  parts: any[]
+): Promise<{ imageData: Uint8Array; mimeType: string } | null> {
+  for (const modelName of MODEL_NAMES) {
+    try {
+      console.log(`Trying model: ${modelName}`);
+      
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${googleKey}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts }],
+            generationConfig: {
+              responseModalities: ['image', 'text'],
+            },
+          }),
+        }
+      );
+
+      const data = await response.json();
+      
+      if (data.error) {
+        console.log(`Model ${modelName} error: ${data.error.message}`);
+        if (data.error.message?.includes('not available in your country') || data.error.code === 404) {
+          continue;
+        }
+        continue;
+      }
+      
+      const responseParts = data.candidates?.[0]?.content?.parts || [];
+      
+      for (const part of responseParts) {
+        if (part.inlineData?.mimeType?.startsWith('image/')) {
+          const imageData = base64Decode(part.inlineData.data);
+          console.log(`Success with model ${modelName}! Image size: ${imageData.length} bytes`);
+          return {
+            imageData,
+            mimeType: part.inlineData.mimeType,
+          };
+        }
+      }
+      
+      console.log(`Model ${modelName}: No image in response`);
+      
+    } catch (e) {
+      console.log(`Model ${modelName} exception: ${e.message}`);
+    }
+  }
+  
+  return null;
+}
+
+// Generate illustration using Gemini with character references
 async function generateIllustration(
   apiKey: string,
   supabase: any,
   sceneDescription: string,
-  characterDescriptions: string,
+  characters: Character[],
+  characterReferences: { name: string; description: string; imageBase64: string }[],
   bookTitle: string,
   chapterId: string,
   position: number
 ): Promise<string | null> {
   try {
-    // Build DALL-E prompt (max 1000 chars)
-    let prompt = `Children's book illustration, Disney-Pixar cartoon style, bright cheerful colors, simple 2D art.
+    const parts: any[] = [];
+    
+    // If we have character references, include them
+    if (characterReferences.length > 0) {
+      for (const ref of characterReferences) {
+        parts.push({
+          inlineData: {
+            mimeType: 'image/png',
+            data: ref.imageBase64,
+          },
+        });
+      }
+      
+      const characterInstructions = characterReferences
+        .map((ref, i) => `${i + 1}. ${ref.name}: Reference image ${i + 1} shows this character`)
+        .join('\n');
+      
+      const prompt = `Create a children's book illustration using EXACTLY the characters from the reference images provided.
+
+Style: Disney-Pixar children's book illustration, 2D cartoon art, bright cheerful colors.
+
+Characters (maintain EXACT appearance from reference images):
+${characterInstructions}
+
+Scene: ${sceneDescription}
+
+Important:
+- Keep characters looking EXACTLY like their reference images
+- Wide shot showing all characters clearly
+- Warm lighting, clean composition
+- No text or words in image
+- Safe for children 5-10 years old`;
+
+      parts.push({ text: prompt });
+    } else {
+      const characterDescriptions = characters
+        .map(c => `${c.name}: ${c.description || ''}`)
+        .join('. ');
+
+      const prompt = `Children's book illustration, Disney-Pixar cartoon style, bright cheerful colors, simple 2D art.
 
 Scene: ${sceneDescription}
 Characters: ${characterDescriptions}
 Book: ${bookTitle}
 
-Style: Cute, friendly, warm lighting, clean composition. Safe for children 5-10 years old. No text or words in image.`;
+Style: Cute, friendly, safe for children 5-10 years old. No text in image. Clean composition.`;
 
-    // Truncate if too long
-    if (prompt.length > 950) {
-      prompt = prompt.substring(0, 947) + '...';
+      parts.push({ text: prompt });
     }
 
-    // Call DALL-E API
-    const response = await fetch('https://api.openai.com/v1/images/generations', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'dall-e-3',
-        prompt: prompt,
-        n: 1,
-        size: '1024x1024',
-        quality: 'standard',
-        response_format: 'b64_json',
-      }),
-    });
-
-    const data = await response.json();
-
-    if (data.error) {
-      console.error('DALL-E error:', data.error);
+    // Try to generate with Gemini
+    const result = await tryGenerateImageWithGemini(apiKey, parts);
+    
+    if (!result) {
+      console.error('Failed to generate image with any Gemini model');
       return null;
     }
 
-    const imageBase64 = data.data?.[0]?.b64_json;
-    if (!imageBase64) {
-      console.error('No image in DALL-E response');
-      return null;
-    }
-
-    // Decode base64 to bytes
-    const binaryString = atob(imageBase64);
-    const bytes = new Uint8Array(binaryString.length);
-    for (let i = 0; i < binaryString.length; i++) {
-      bytes[i] = binaryString.charCodeAt(i);
-    }
+    const { imageData, mimeType } = result;
 
     // Upload to Storage
     const fileName = `illustrations/${chapterId}_${position}.png`;
     
     const { error: uploadError } = await supabase.storage
       .from('images')
-      .upload(fileName, bytes, {
-        contentType: 'image/png',
+      .upload(fileName, imageData, {
+        contentType: mimeType,
         upsert: true,
       });
 
@@ -312,7 +416,6 @@ Style: Cute, friendly, warm lighting, clean composition. Safe for children 5-10 
       return null;
     }
 
-    // Get public URL
     const { data: urlData } = supabase.storage
       .from('images')
       .getPublicUrl(fileName);
