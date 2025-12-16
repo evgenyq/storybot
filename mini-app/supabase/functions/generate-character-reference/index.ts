@@ -16,12 +16,12 @@ interface GenerateCharacterRequest {
   description: string;
 }
 
-// Try different model names - Google keeps renaming them
+// Actual model names for image generation (from Google API)
 const MODEL_NAMES = [
-  'gemini-2.0-flash-preview-image-generation',  // Nano Banana current name
-  'gemini-2.5-flash-preview-image-generation',  // Possible new name
-  'gemini-2.0-flash-exp-image-generation',      // Alternative
-  'gemini-2.0-flash-exp',                        // Old name
+  'gemini-2.5-flash-image',             // Gemini 2.5 Flash Image (Nano Banana)
+  'nano-banana-pro-preview',            // Nano Banana Pro direct name
+  'gemini-2.5-flash-image-preview',     // Preview version
+  'gemini-3-pro-image-preview',         // Gemini 3 Pro Image
 ];
 
 async function tryGenerateImage(googleKey: string, prompt: string): Promise<{ imageData: Uint8Array; mimeType: string } | null> {
