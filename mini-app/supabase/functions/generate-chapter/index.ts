@@ -1,9 +1,8 @@
 // Supabase Edge Function: Generate Chapter with Illustrations
-// Uses OpenAI GPT for text, Google Gemini for images with character references
+// Uses OpenAI GPT for text, OpenAI DALL-E for images
 
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { decode as base64Decode, encode as base64Encode } from 'https://deno.land/std@0.168.0/encoding/base64.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -31,7 +30,6 @@ serve(async (req) => {
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
     const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
     const openaiKey = Deno.env.get('OPENAI_API_KEY')!;
-    const googleKey = Deno.env.get('GOOGLE_API_KEY')!;
 
     const supabase = createClient(supabaseUrl, supabaseKey);
     
@@ -103,7 +101,7 @@ ${hint ? `Подсказка для этой главы: ${hint}` : 'Приду�
 - Закончи главу интригующе, чтобы хотелось читать дальше
 
 В конце добавь строку в формате:
-[ИЛЛЮСТРАЦИЯ: краткое описание ключевой сцены для иллюстрации]`;
+[ИЛЛЮСТРАЦИЯ: краткое описание ключевой сцены для иллюстрации на английском языке]`;
 
     const openaiResponse = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
@@ -133,7 +131,7 @@ ${hint ? `Подсказка для этой главы: ${hint}` : 'Приду�
 
     // Extract illustration prompt
     const illustrationMatch = chapterContent.match(/\[ИЛЛЮСТРАЦИЯ:\s*([^\]]+)\]/i);
-    const illustrationPrompt = illustrationMatch?.[1] || `сцена из главы ${nextChapterNum} книги "${book.title}"`;
+    const illustrationPrompt = illustrationMatch?.[1] || `scene from chapter ${nextChapterNum} of children's book "${book.title}"`;
     
     // Remove illustration tag from content
     chapterContent = chapterContent.replace(/\[ИЛЛЮСТРАЦИЯ:[^\]]+\]/gi, '').trim();
@@ -160,24 +158,25 @@ ${hint ? `Подсказка для этой главы: ${hint}` : 'Приду�
 
     console.log(`Chapter saved: ${chapter.id}`);
 
-    // ============ STEP 3: Generate illustrations with character references ============
+    // ============ STEP 3: Generate illustrations with DALL-E ============
     
     const illustrations: any[] = [];
     
-    // Fetch character reference images
-    const characterReferences = await fetchCharacterReferences(supabase, characters);
-    console.log(`Loaded ${characterReferences.length} character references`);
+    // Build character descriptions for DALL-E
+    const characterDescriptions = characters
+      .map(c => `${c.name}: ${c.description || ''}`)
+      .join('. ')
+      .substring(0, 300);
 
     for (let i = 0; i < settings.images_per_chapter; i++) {
       try {
         console.log(`Generating illustration ${i + 1}/${settings.images_per_chapter}`);
         
         const imageUrl = await generateIllustration(
-          googleKey,
+          openaiKey,
           supabase,
           illustrationPrompt,
-          characters,
-          characterReferences,
+          characterDescriptions,
           book.title,
           chapter.id,
           i
@@ -236,136 +235,66 @@ ${hint ? `Подсказка для этой главы: ${hint}` : 'Приду�
   }
 });
 
-// Fetch character reference images from Storage
-async function fetchCharacterReferences(
-  supabase: any,
-  characters: Character[]
-): Promise<{ name: string; description: string; imageBase64: string }[]> {
-  const references: { name: string; description: string; imageBase64: string }[] = [];
-  
-  for (const char of characters) {
-    if (!char.image_url) continue;
-    
-    try {
-      // Download image from Storage
-      const response = await fetch(char.image_url);
-      if (!response.ok) continue;
-      
-      const imageBuffer = await response.arrayBuffer();
-      const imageBase64 = base64Encode(new Uint8Array(imageBuffer));
-      
-      references.push({
-        name: char.name,
-        description: char.description || '',
-        imageBase64,
-      });
-    } catch (e) {
-      console.error(`Failed to fetch reference for ${char.name}:`, e);
-    }
-  }
-  
-  return references;
-}
-
-// Generate illustration using Gemini with character references
+// Generate illustration using DALL-E
 async function generateIllustration(
   apiKey: string,
   supabase: any,
   sceneDescription: string,
-  characters: Character[],
-  characterReferences: { name: string; description: string; imageBase64: string }[],
+  characterDescriptions: string,
   bookTitle: string,
   chapterId: string,
   position: number
 ): Promise<string | null> {
   try {
-    // Build content parts for Gemini
-    const parts: any[] = [];
-    
-    // If we have character references, include them
-    if (characterReferences.length > 0) {
-      // Add reference images first
-      for (const ref of characterReferences) {
-        parts.push({
-          inlineData: {
-            mimeType: 'image/png',
-            data: ref.imageBase64,
-          },
-        });
-      }
-      
-      // Build prompt with reference instructions
-      const characterInstructions = characterReferences
-        .map((ref, i) => `${i + 1}. ${ref.name}: Reference image ${i + 1} shows this character`)
-        .join('\n');
-      
-      const prompt = `Create a children's book illustration using EXACTLY the characters from the reference images provided.
-
-Style: Disney-Pixar children's book illustration, 2D cartoon art, bright cheerful colors.
-
-Characters (maintain EXACT appearance from reference images):
-${characterInstructions}
-
-Scene: ${sceneDescription}
-
-Important:
-- Keep characters looking EXACTLY like their reference images
-- Wide shot showing all characters clearly
-- Warm lighting, clean composition
-- No text or words in image
-- Safe for children 5-10 years old`;
-
-      parts.push({ text: prompt });
-    } else {
-      // No references - use text-only prompt
-      const characterDescriptions = characters
-        .map(c => `${c.name}: ${c.description || ''}`)
-        .join('. ');
-
-      const prompt = `Children's book illustration, Disney-Pixar cartoon style, bright cheerful colors, simple 2D art.
+    // Build DALL-E prompt (max 1000 chars)
+    let prompt = `Children's book illustration, Disney-Pixar cartoon style, bright cheerful colors, simple 2D art.
 
 Scene: ${sceneDescription}
 Characters: ${characterDescriptions}
 Book: ${bookTitle}
 
-Style: Cute, friendly, safe for children 5-10 years old. No text in image. Clean composition.`;
+Style: Cute, friendly, warm lighting, clean composition. Safe for children 5-10 years old. No text or words in image.`;
 
-      parts.push({ text: prompt });
+    // Truncate if too long
+    if (prompt.length > 950) {
+      prompt = prompt.substring(0, 947) + '...';
     }
 
-    // Call Gemini API
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${apiKey}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts }],
-          generationConfig: {
-            responseModalities: ['image', 'text'],
-          },
-        }),
-      }
-    );
+    // Call DALL-E API
+    const response = await fetch('https://api.openai.com/v1/images/generations', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'dall-e-3',
+        prompt: prompt,
+        n: 1,
+        size: '1024x1024',
+        quality: 'standard',
+        response_format: 'b64_json',
+      }),
+    });
 
     const data = await response.json();
-    
-    // Extract image from response
-    const responseParts = data.candidates?.[0]?.content?.parts || [];
-    let imageData: Uint8Array | null = null;
-    let mimeType = 'image/png';
 
-    for (const part of responseParts) {
-      if (part.inlineData?.mimeType?.startsWith('image/')) {
-        imageData = base64Decode(part.inlineData.data);
-        mimeType = part.inlineData.mimeType;
-        break;
-      }
+    if (data.error) {
+      console.error('DALL-E error:', data.error);
+      return null;
     }
 
-    if (!imageData) {
-      console.error('No image in Gemini response');
+    const imageBase64 = data.data?.[0]?.b64_json;
+    if (!imageBase64) {
+      console.error('No image in DALL-E response');
       return null;
+    }
+
+    // Decode base64 to bytes
+    const binaryString = atob(imageBase64);
+    const bytes = new Uint8Array(binaryString.length);
+    for (let i = 0; i < binaryString.length; i++) {
+      bytes[i] = binaryString.charCodeAt(i);
     }
 
     // Upload to Storage
@@ -373,8 +302,8 @@ Style: Cute, friendly, safe for children 5-10 years old. No text in image. Clean
     
     const { error: uploadError } = await supabase.storage
       .from('images')
-      .upload(fileName, imageData, {
-        contentType: mimeType,
+      .upload(fileName, bytes, {
+        contentType: 'image/png',
         upsert: true,
       });
 
@@ -394,4 +323,3 @@ Style: Cute, friendly, safe for children 5-10 years old. No text in image. Clean
     return null;
   }
 }
-

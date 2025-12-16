@@ -1,9 +1,8 @@
 // Supabase Edge Function: Generate Character Reference Image
-// Uses Google Gemini for image generation, stores in Supabase Storage
+// Uses OpenAI DALL-E for image generation, stores in Supabase Storage
 
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { decode as base64Decode } from 'https://deno.land/std@0.168.0/encoding/base64.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -25,7 +24,7 @@ serve(async (req) => {
   try {
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
     const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-    const googleKey = Deno.env.get('GOOGLE_API_KEY')!;
+    const openaiKey = Deno.env.get('OPENAI_API_KEY')!;
 
     const supabase = createClient(supabaseUrl, supabaseKey);
     
@@ -33,54 +32,58 @@ serve(async (req) => {
 
     console.log(`Generating reference for character: ${name}`);
 
-    // Build prompt for character reference (similar to Python bot)
-    const prompt = `Simple Disney-Pixar character portrait, minimalist 2D cartoon style, basic rounded features.
+    // Build prompt for DALL-E (max 1000 chars)
+    let prompt = `Simple Disney-Pixar style character portrait for children's book.
 
+Character: ${name}
 ${description}
 
-Create a small, simple character reference image. Basic cartoon portrait, minimal details, clean style.
-- Portrait/bust shot of the character
-- White or simple solid background
-- Friendly expression, big eyes
-- Bright, cheerful colors
-- No text or words in image
-- Safe and appropriate for children ages 5-10`;
+Style: Cute 2D cartoon, rounded features, big friendly eyes, bright cheerful colors, simple clean design, white background, portrait/bust shot. Safe for children 5-10 years old. No text.`;
 
-    // Generate image with Gemini
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${googleKey}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: {
-            responseModalities: ['image', 'text'],
-          },
-        }),
-      }
-    );
-
-    const data = await response.json();
-    
-    // Extract image from response
-    const parts = data.candidates?.[0]?.content?.parts || [];
-    let imageData: Uint8Array | null = null;
-    let mimeType = 'image/png';
-
-    for (const part of parts) {
-      if (part.inlineData?.mimeType?.startsWith('image/')) {
-        // Decode base64 to bytes
-        imageData = base64Decode(part.inlineData.data);
-        mimeType = part.inlineData.mimeType;
-        console.log(`Image generated: ${imageData.length} bytes, ${mimeType}`);
-        break;
-      }
+    // Truncate if too long
+    if (prompt.length > 950) {
+      prompt = prompt.substring(0, 947) + '...';
     }
 
-    if (!imageData) {
-      console.error('No image in Gemini response:', JSON.stringify(data).substring(0, 500));
-      throw new Error('Failed to generate image - no image in response');
+    console.log('Calling DALL-E...');
+
+    // Generate image with DALL-E
+    const response = await fetch('https://api.openai.com/v1/images/generations', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${openaiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'dall-e-3',
+        prompt: prompt,
+        n: 1,
+        size: '1024x1024',
+        quality: 'standard',
+        response_format: 'b64_json',
+      }),
+    });
+
+    const data = await response.json();
+
+    if (data.error) {
+      console.error('DALL-E error:', data.error);
+      throw new Error(`DALL-E error: ${data.error.message}`);
+    }
+
+    const imageBase64 = data.data?.[0]?.b64_json;
+    if (!imageBase64) {
+      console.error('No image in DALL-E response');
+      throw new Error('No image generated');
+    }
+
+    console.log('Image generated, uploading to Storage...');
+
+    // Decode base64 to bytes
+    const binaryString = atob(imageBase64);
+    const bytes = new Uint8Array(binaryString.length);
+    for (let i = 0; i < binaryString.length; i++) {
+      bytes[i] = binaryString.charCodeAt(i);
     }
 
     // Upload to Supabase Storage
@@ -88,9 +91,9 @@ Create a small, simple character reference image. Basic cartoon portrait, minima
     
     const { error: uploadError } = await supabase.storage
       .from('images')
-      .upload(fileName, imageData, {
-        contentType: mimeType,
-        upsert: true, // Overwrite if exists
+      .upload(fileName, bytes, {
+        contentType: 'image/png',
+        upsert: true,
       });
 
     if (uploadError) {
