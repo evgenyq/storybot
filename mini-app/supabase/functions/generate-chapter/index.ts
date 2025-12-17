@@ -103,20 +103,31 @@ ${previousText}
 
 ${hint ? `Подсказка для этой главы: ${hint}` : 'Придумай интересное продолжение истории.'}
 
-Требования:
+Требования к тексту:
 - Длина: примерно ${settings.chapter_size} слов
 - Стиль: добрый, увлекательный, подходящий для детей 5-10 лет
 - Включи диалоги персонажей
 - Закончи главу интригующе, чтобы хотелось читать дальше
 
-ВАЖНО: Вставь ровно ${imagesCount} маркера для иллюстраций ВНУТРИ текста в подходящих местах.
-Формат маркера: [ИЛЛЮСТРАЦИЯ: краткое описание сцены для картинки]
+КРИТИЧЕСКИ ВАЖНО ПРО ИЛЛЮСТРАЦИИ:
+Ты ОБЯЗАН вставить РОВНО ${imagesCount} ${imagesCount === 1 ? 'маркер' : imagesCount === 2 ? 'маркера' : 'маркеров'} [ИЛЛЮСТРАЦИЯ: описание] внутри текста.
+НЕ больше, НЕ меньше — РОВНО ${imagesCount}!
 
-Правила размещения маркеров:
-- Первый маркер — после интересного момента в начале-середине главы
-- Последний маркер — ближе к концу, но НЕ в самом конце
-- Маркер должен описывать сцену, которую читатель УЖЕ прочитал (не спойлер)
-- Описание сцены должно быть кратким (10-20 слов)`;
+Формат: [ИЛЛЮСТРАЦИЯ: краткое описание сцены (10-20 слов)]
+
+Где размещать:
+- Распредели маркеры равномерно по тексту
+- Первый — после начального события (примерно 1/3 главы)
+- Следующие — через равные промежутки текста
+- Последний — ближе к концу, но не в самой последней строке
+- Описывай сцену, которую читатель УЖЕ прочитал (не спойлер!)
+
+Пример для ${imagesCount} ${imagesCount === 1 ? 'маркера' : 'маркеров'}:
+${imagesCount === 1 ? '[ИЛЛЮСТРАЦИЯ: Котик смотрит на звёздное небо]' : 
+  imagesCount === 2 ? '[ИЛЛЮСТРАЦИЯ: Котик находит загадочную коробку]\n...\n[ИЛЛЮСТРАЦИЯ: Котик и новый друг радостно играют]' :
+  '[ИЛЛЮСТРАЦИЯ: Котик выходит из дома]\n...\n[ИЛЛЮСТРАЦИЯ: Котик находит загадочную коробку]\n...\n[ИЛЛЮСТРАЦИЯ: Котик и новый друг смотрят на закат]'}
+
+ПРОВЕРЬ ПЕРЕД ОТВЕТОМ: убедись что вставил РОВНО ${imagesCount} ${imagesCount === 1 ? 'маркер' : 'маркеров'}!`;
 
     const openaiResponse = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
@@ -163,73 +174,18 @@ ${hint ? `Подсказка для этой главы: ${hint}` : 'Приду�
 
     console.log(`Found ${illustrationMarkers.length} illustration markers`);
 
-    // If GPT didn't create enough markers, generate additional prompts
+    // If GPT didn't create enough markers despite explicit instructions,
+    // add generic ones as fallback (this should rarely happen now)
     if (illustrationMarkers.length < imagesCount) {
       const missing = imagesCount - illustrationMarkers.length;
-      console.log(`GPT created ${illustrationMarkers.length} markers, need ${imagesCount}. Generating ${missing} more prompts...`);
+      console.warn(`GPT created ${illustrationMarkers.length} markers instead of ${imagesCount}. Adding ${missing} generic ones.`);
       
-      try {
-        // Ask GPT to suggest illustration prompts for this chapter
-        const promptRequest = `Текст главы:
-${chapterContent}
-
-Предложи ${missing} идей для иллюстраций к этой главе. Каждая идея — краткое описание интересной сцены (10-20 слов).
-Формат: просто описания через точку с запятой, без нумерации.`;
-
-        const promptResponse = await fetch('https://api.openai.com/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${openaiKey}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            model: 'gpt-4o-mini',
-            messages: [
-              { role: 'user', content: promptRequest },
-            ],
-            temperature: 0.7,
-            max_tokens: 300,
-          }),
+      for (let i = illustrationMarkers.length; i < imagesCount; i++) {
+        illustrationMarkers.push({
+          position: i,
+          prompt: `сцена из главы ${nextChapterNum} книги "${book.title}"`,
+          textPosition: chapterContent.length, // At the end
         });
-
-        const promptData = await promptResponse.json();
-        const suggestions = promptData.choices?.[0]?.message?.content || '';
-        
-        // Parse suggestions (split by semicolon or newline)
-        const prompts = suggestions
-          .split(/[;\n]/)
-          .map((p: string) => p.trim())
-          .filter((p: string) => p.length > 0)
-          .slice(0, missing);
-
-        console.log(`Generated additional prompts: ${prompts.join('; ')}`);
-
-        prompts.forEach((prompt: string) => {
-          illustrationMarkers.push({
-            position: illustrationMarkers.length,
-            prompt: prompt || `сцена из главы ${nextChapterNum}`,
-            textPosition: chapterContent.length, // At the end
-          });
-        });
-
-        // If still missing, add generic ones
-        while (illustrationMarkers.length < imagesCount) {
-          illustrationMarkers.push({
-            position: illustrationMarkers.length,
-            prompt: `сцена из главы ${nextChapterNum}`,
-            textPosition: chapterContent.length,
-          });
-        }
-      } catch (error) {
-        console.error('Failed to generate additional prompts:', error);
-        // Fallback to generic prompts
-        for (let i = illustrationMarkers.length; i < imagesCount; i++) {
-          illustrationMarkers.push({
-            position: i,
-            prompt: `сцена из главы ${nextChapterNum}`,
-            textPosition: chapterContent.length,
-          });
-        }
       }
     }
 
