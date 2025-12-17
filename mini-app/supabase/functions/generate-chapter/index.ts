@@ -163,17 +163,73 @@ ${hint ? `Подсказка для этой главы: ${hint}` : 'Приду�
 
     console.log(`Found ${illustrationMarkers.length} illustration markers`);
 
-    // If GPT didn't create enough markers, add generic ones at the end
+    // If GPT didn't create enough markers, generate additional prompts
     if (illustrationMarkers.length < imagesCount) {
       const missing = imagesCount - illustrationMarkers.length;
-      console.log(`Adding ${missing} missing illustration markers`);
+      console.log(`GPT created ${illustrationMarkers.length} markers, need ${imagesCount}. Generating ${missing} more prompts...`);
       
-      for (let i = 0; i < missing; i++) {
-        illustrationMarkers.push({
-          position: illustrationMarkers.length,
-          prompt: `сцена из главы ${nextChapterNum}`,
-          textPosition: chapterContent.length, // At the end
+      try {
+        // Ask GPT to suggest illustration prompts for this chapter
+        const promptRequest = `Текст главы:
+${chapterContent}
+
+Предложи ${missing} идей для иллюстраций к этой главе. Каждая идея — краткое описание интересной сцены (10-20 слов).
+Формат: просто описания через точку с запятой, без нумерации.`;
+
+        const promptResponse = await fetch('https://api.openai.com/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${openaiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model: 'gpt-4o-mini',
+            messages: [
+              { role: 'user', content: promptRequest },
+            ],
+            temperature: 0.7,
+            max_tokens: 300,
+          }),
         });
+
+        const promptData = await promptResponse.json();
+        const suggestions = promptData.choices?.[0]?.message?.content || '';
+        
+        // Parse suggestions (split by semicolon or newline)
+        const prompts = suggestions
+          .split(/[;\n]/)
+          .map((p: string) => p.trim())
+          .filter((p: string) => p.length > 0)
+          .slice(0, missing);
+
+        console.log(`Generated additional prompts: ${prompts.join('; ')}`);
+
+        prompts.forEach((prompt: string) => {
+          illustrationMarkers.push({
+            position: illustrationMarkers.length,
+            prompt: prompt || `сцена из главы ${nextChapterNum}`,
+            textPosition: chapterContent.length, // At the end
+          });
+        });
+
+        // If still missing, add generic ones
+        while (illustrationMarkers.length < imagesCount) {
+          illustrationMarkers.push({
+            position: illustrationMarkers.length,
+            prompt: `сцена из главы ${nextChapterNum}`,
+            textPosition: chapterContent.length,
+          });
+        }
+      } catch (error) {
+        console.error('Failed to generate additional prompts:', error);
+        // Fallback to generic prompts
+        for (let i = illustrationMarkers.length; i < imagesCount; i++) {
+          illustrationMarkers.push({
+            position: i,
+            prompt: `сцена из главы ${nextChapterNum}`,
+            textPosition: chapterContent.length,
+          });
+        }
       }
     }
 
