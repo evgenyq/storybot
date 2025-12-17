@@ -5,7 +5,7 @@ import { Button, Loader } from '../../components/ui';
 import { GenerationProgress } from '../../components/GenerationProgress';
 import { useStore, useTelegram } from '../../shared/hooks';
 import { getBook, generateChapter, generateIllustration } from '../../shared/api';
-import type { ChapterWithIllustrations, Illustration, PendingIllustration, BookWithDetails } from '../../shared/types';
+import type { ChapterWithIllustrations, Illustration, PendingIllustration } from '../../shared/types';
 
 export function BookReaderPage() {
   const { bookId } = useParams<{ bookId: string }>();
@@ -58,7 +58,7 @@ export function BookReaderPage() {
   // Start generating an illustration in background
   const startIllustrationGeneration = useCallback(async (
     illustrationId: string, 
-    chapterId: string,
+    _chapterId: string,
     setAsCover: boolean = false
   ) => {
     // Skip if already generating
@@ -70,24 +70,10 @@ export function BookReaderPage() {
       console.log(`Starting generation for illustration ${illustrationId}`);
       const result = await generateIllustration(illustrationId, setAsCover);
       
-      if (result?.illustration && currentBook) {
-        // Update the illustration in currentBook
-        const updatedBook: BookWithDetails = {
-          ...currentBook,
-          chapters: currentBook.chapters.map((ch: ChapterWithIllustrations) => {
-            if (ch.id !== chapterId) return ch;
-            return {
-              ...ch,
-              illustrations: ch.illustrations.map((ill: Illustration) => 
-                ill.id === illustrationId ? result.illustration : ill
-              ),
-            };
-          }),
-          // Update cover if this was the first illustration
-          cover_url: setAsCover ? result.illustration.image_url : currentBook.cover_url,
-        };
-        setCurrentBook(updatedBook);
-        
+      if (result?.illustration && bookId) {
+        // Reload book to get fresh state (avoids stale closure issues)
+        const freshBook = await getBook(bookId);
+        setCurrentBook(freshBook);
         hapticFeedback.light();
       }
     } catch (error) {
@@ -99,7 +85,7 @@ export function BookReaderPage() {
         return next;
       });
     }
-  }, [generatingIllustrations, setCurrentBook, hapticFeedback, currentBook]);
+  }, [generatingIllustrations, setCurrentBook, hapticFeedback, bookId]);
 
   const handleContinueStory = async () => {
     navigate(`/book/${bookId}/new-chapter`);
