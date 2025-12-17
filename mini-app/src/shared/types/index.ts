@@ -56,9 +56,11 @@ export interface Chapter {
 export interface Illustration {
   id: string;
   chapter_id: string;
-  image_url: string;
+  image_url: string | null;
   prompt: string | null;
   position: number;
+  text_position: number;  // Position in text where [IMG:N] placeholder is
+  status: 'pending' | 'generating' | 'ready' | 'error';
   created_at: string;
 }
 
@@ -80,8 +82,17 @@ export interface GenerateChapterRequest {
 }
 
 export interface GenerateChapterResponse {
-  chapter: Chapter;
-  illustrations: Illustration[];
+  chapter: ChapterWithIllustrations;
+  pending_illustrations: PendingIllustration[];
+  needs_cover: boolean;
+}
+
+export interface PendingIllustration {
+  id: string;
+  position: number;
+  text_position: number;
+  prompt: string;
+  status: string;
 }
 
 export interface GenerateCharacterImageRequest {

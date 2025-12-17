@@ -252,6 +252,29 @@ export async function generateChapter(bookId: string, hint?: string) {
   return data;
 }
 
+export async function generateIllustration(illustrationId: string, setAsCover: boolean = false) {
+  const { data, error } = await supabase.functions.invoke('generate-illustration', {
+    body: { illustration_id: illustrationId, set_as_cover: setAsCover },
+  });
+
+  if (error) throw error;
+  return data;
+}
+
+export async function getIllustration(illustrationId: string): Promise<Illustration | null> {
+  const { data, error } = await supabase
+    .from('illustrations')
+    .select('*')
+    .eq('id', illustrationId)
+    .single();
+
+  if (error) {
+    if (error.code === 'PGRST116') return null;
+    throw error;
+  }
+  return data;
+}
+
 export async function generateCharacterImage(characterId: string, name: string, description: string) {
   const { data, error } = await supabase.functions.invoke('generate-character-reference', {
     body: { character_id: characterId, name, description },

@@ -1,22 +1,13 @@
-// Supabase Edge Function: Generate Chapter with Illustrations
-// Uses OpenAI GPT for text, Google Gemini (Nano Banana) for images
+// Supabase Edge Function: Generate Chapter
+// Returns chapter text immediately, illustrations are generated async
 
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { decode as base64Decode, encode as base64Encode } from 'https://deno.land/std@0.168.0/encoding/base64.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
-
-// Actual model names for image generation (from Google API)
-const MODEL_NAMES = [
-  'gemini-2.5-flash-image',             // Gemini 2.5 Flash Image (Nano Banana)
-  'nano-banana-pro-preview',            // Nano Banana Pro direct name
-  'gemini-2.5-flash-image-preview',     // Preview version
-  'gemini-3-pro-image-preview',         // Gemini 3 Pro Image
-];
 
 interface GenerateChapterRequest {
   book_id: string;
@@ -30,6 +21,14 @@ interface Character {
   image_url?: string;
 }
 
+interface PendingIllustration {
+  id: string;
+  position: number;
+  text_position: number;
+  prompt: string;
+  status: string;
+}
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
@@ -39,7 +38,6 @@ serve(async (req) => {
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
     const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
     const openaiKey = Deno.env.get('OPENAI_API_KEY')!;
-    const googleKey = Deno.env.get('GOOGLE_API_KEY')!;
 
     const supabase = createClient(supabaseUrl, supabaseKey);
     
@@ -66,13 +64,14 @@ serve(async (req) => {
       .single();
 
     const settings = user?.settings || { chapter_size: 500, images_per_chapter: 2 };
+    const imagesCount = settings.images_per_chapter || 2;
     
     // Prepare context
     const characters: Character[] = book.book_characters?.map((bc: any) => bc.character) || [];
     const previousChapters = book.chapters?.sort((a: any, b: any) => a.chapter_number - b.chapter_number) || [];
     const nextChapterNum = previousChapters.length + 1;
 
-    console.log(`Generating chapter ${nextChapterNum}, characters: ${characters.length}`);
+    console.log(`Generating chapter ${nextChapterNum}, characters: ${characters.length}, images: ${imagesCount}`);
 
     // ============ STEP 1: Generate chapter text with OpenAI ============
     
@@ -110,8 +109,14 @@ ${hint ? `Подсказка для этой главы: ${hint}` : 'Приду�
 - Включи диалоги персонажей
 - Закончи главу интригующе, чтобы хотелось читать дальше
 
-В конце добавь строку в формате:
-[ИЛЛЮСТРАЦИЯ: краткое описание ключевой сцены для иллюстрации]`;
+ВАЖНО: Вставь ровно ${imagesCount} маркера для иллюстраций ВНУТРИ текста в подходящих местах.
+Формат маркера: [ИЛЛЮСТРАЦИЯ: краткое описание сцены для картинки]
+
+Правила размещения маркеров:
+- Первый маркер — после интересного момента в начале-середине главы
+- Последний маркер — ближе к концу, но НЕ в самом конце
+- Маркер должен описывать сцену, которую читатель УЖЕ прочитал (не спойлер)
+- Описание сцены должно быть кратким (10-20 слов)`;
 
     const openaiResponse = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
@@ -126,7 +131,7 @@ ${hint ? `Подсказка для этой главы: ${hint}` : 'Приду�
           { role: 'user', content: userPrompt },
         ],
         temperature: 0.8,
-        max_tokens: 2000,
+        max_tokens: 2500,
       }),
     });
 
@@ -138,17 +143,36 @@ ${hint ? `Подсказка для этой главы: ${hint}` : 'Приду�
     }
 
     let chapterContent = openaiData.choices[0].message.content;
+    console.log(`Chapter text generated, length: ${chapterContent.length}`);
 
-    // Extract illustration prompt
-    const illustrationMatch = chapterContent.match(/\[ИЛЛЮСТРАЦИЯ:\s*([^\]]+)\]/i);
-    const illustrationPrompt = illustrationMatch?.[1] || `сцена из главы ${nextChapterNum} книги "${book.title}"`;
+    // ============ STEP 2: Parse illustration markers ============
     
-    // Remove illustration tag from content
-    chapterContent = chapterContent.replace(/\[ИЛЛЮСТРАЦИЯ:[^\]]+\]/gi, '').trim();
+    const illustrationMarkers: { position: number; prompt: string; textPosition: number }[] = [];
+    const markerRegex = /\[ИЛЛЮСТРАЦИЯ:\s*([^\]]+)\]/gi;
+    let match;
+    let imgIndex = 0;
+    
+    while ((match = markerRegex.exec(chapterContent)) !== null) {
+      illustrationMarkers.push({
+        position: imgIndex,
+        prompt: match[1].trim(),
+        textPosition: match.index, // Character position in text
+      });
+      imgIndex++;
+    }
 
-    console.log(`Chapter text generated, illustration prompt: ${illustrationPrompt}`);
+    console.log(`Found ${illustrationMarkers.length} illustration markers`);
 
-    // ============ STEP 2: Save chapter ============
+    // Replace markers with [IMG:N] placeholders
+    let processedContent = chapterContent;
+    illustrationMarkers.forEach((marker, i) => {
+      processedContent = processedContent.replace(
+        /\[ИЛЛЮСТРАЦИЯ:\s*[^\]]+\]/i,
+        `[IMG:${i}]`
+      );
+    });
+
+    // ============ STEP 3: Save chapter immediately ============
     
     const { data: chapter, error: chapterError } = await supabase
       .from('chapters')
@@ -156,7 +180,7 @@ ${hint ? `Подсказка для этой главы: ${hint}` : 'Приду�
         book_id,
         chapter_number: nextChapterNum,
         title: `Глава ${nextChapterNum}`,
-        content: chapterContent,
+        content: processedContent,
       })
       .select()
       .single();
@@ -168,64 +192,55 @@ ${hint ? `Подсказка для этой главы: ${hint}` : 'Приду�
 
     console.log(`Chapter saved: ${chapter.id}`);
 
-    // ============ STEP 3: Generate illustrations ============
+    // ============ STEP 4: Create pending illustrations ============
     
-    const illustrations: any[] = [];
+    const pendingIllustrations: PendingIllustration[] = [];
     
-    // Fetch character reference images for Gemini
-    const characterReferences = await fetchCharacterReferences(characters);
-    console.log(`Loaded ${characterReferences.length} character references`);
+    for (const marker of illustrationMarkers) {
+      const { data: illustration, error: illError } = await supabase
+        .from('illustrations')
+        .insert({
+          chapter_id: chapter.id,
+          prompt: marker.prompt,
+          position: marker.position,
+          text_position: marker.textPosition,
+          status: 'pending',
+          image_url: '', // Will be filled when generated
+        })
+        .select()
+        .single();
 
-    for (let i = 0; i < settings.images_per_chapter; i++) {
-      try {
-        console.log(`Generating illustration ${i + 1}/${settings.images_per_chapter}`);
-        
-        const imageUrl = await generateIllustration(
-          googleKey,
-          supabase,
-          illustrationPrompt,
-          characters,
-          characterReferences,
-          book.title,
-          chapter.id,
-          i
-        );
-
-        if (imageUrl) {
-          const { data: illustration, error: illError } = await supabase
-            .from('illustrations')
-            .insert({
-              chapter_id: chapter.id,
-              image_url: imageUrl,
-              prompt: illustrationPrompt,
-              position: i,
-            })
-            .select()
-            .single();
-
-          if (illustration && !illError) {
-            illustrations.push(illustration);
-            console.log(`Illustration ${i + 1} saved: ${imageUrl}`);
-          }
-
-          // Set first illustration as book cover if no cover
-          if (i === 0 && !book.cover_url) {
-            await supabase
-              .from('books')
-              .update({ cover_url: imageUrl })
-              .eq('id', book_id);
-            console.log('Book cover updated');
-          }
-        }
-      } catch (imgError) {
-        console.error(`Illustration ${i + 1} generation error:`, imgError);
+      if (illustration && !illError) {
+        pendingIllustrations.push({
+          id: illustration.id,
+          position: marker.position,
+          text_position: marker.textPosition,
+          prompt: marker.prompt,
+          status: 'pending',
+        });
       }
     }
 
+    console.log(`Created ${pendingIllustrations.length} pending illustrations`);
+
+    // ============ STEP 5: Set book cover from first image if needed ============
+    
+    const needsCover = !book.cover_url && pendingIllustrations.length > 0;
+
     return new Response(
       JSON.stringify({
-        chapter,
-        illustrations,
+        chapter: {
+          ...chapter,
+          illustrations: pendingIllustrations.map(ill => ({
+            id: ill.id,
+            position: ill.position,
+            text_position: ill.text_position,
+            status: ill.status,
+            image_url: null,
+          })),
+        },
+        pending_illustrations: pendingIllustrations,
+        needs_cover: needsCover,
       }),
       {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -243,186 +258,3 @@ ${hint ? `Подсказка для этой главы: ${hint}` : 'Приду�
     );
   }
 });
-
-// Fetch character reference images from their URLs
-async function fetchCharacterReferences(
-  characters: Character[]
-): Promise<{ name: string; description: string; imageBase64: string }[]> {
-  const references: { name: string; description: string; imageBase64: string }[] = [];
-  
-  for (const char of characters) {
-    if (!char.image_url) continue;
-    
-    try {
-      const response = await fetch(char.image_url);
-      if (!response.ok) continue;
-      
-      const imageBuffer = await response.arrayBuffer();
-      const imageBase64 = base64Encode(new Uint8Array(imageBuffer));
-      
-      references.push({
-        name: char.name,
-        description: char.description || '',
-        imageBase64,
-      });
-    } catch (e) {
-      console.error(`Failed to fetch reference for ${char.name}:`, e);
-    }
-  }
-  
-  return references;
-}
-
-// Try to generate image with different Gemini models
-async function tryGenerateImageWithGemini(
-  googleKey: string,
-  parts: any[]
-): Promise<{ imageData: Uint8Array; mimeType: string } | null> {
-  for (const modelName of MODEL_NAMES) {
-    try {
-      console.log(`Trying model: ${modelName}`);
-      
-      const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${googleKey}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ parts }],
-            generationConfig: {
-              responseModalities: ['image', 'text'],
-            },
-          }),
-        }
-      );
-
-      const data = await response.json();
-      
-      if (data.error) {
-        console.log(`Model ${modelName} error: ${data.error.message}`);
-        if (data.error.message?.includes('not available in your country') || data.error.code === 404) {
-          continue;
-        }
-        continue;
-      }
-      
-      const responseParts = data.candidates?.[0]?.content?.parts || [];
-      
-      for (const part of responseParts) {
-        if (part.inlineData?.mimeType?.startsWith('image/')) {
-          const imageData = base64Decode(part.inlineData.data);
-          console.log(`Success with model ${modelName}! Image size: ${imageData.length} bytes`);
-          return {
-            imageData,
-            mimeType: part.inlineData.mimeType,
-          };
-        }
-      }
-      
-      console.log(`Model ${modelName}: No image in response`);
-      
-    } catch (e) {
-      console.log(`Model ${modelName} exception: ${e.message}`);
-    }
-  }
-  
-  return null;
-}
-
-// Generate illustration using Gemini with character references
-async function generateIllustration(
-  apiKey: string,
-  supabase: any,
-  sceneDescription: string,
-  characters: Character[],
-  characterReferences: { name: string; description: string; imageBase64: string }[],
-  bookTitle: string,
-  chapterId: string,
-  position: number
-): Promise<string | null> {
-  try {
-    const parts: any[] = [];
-    
-    // If we have character references, include them
-    if (characterReferences.length > 0) {
-      for (const ref of characterReferences) {
-        parts.push({
-          inlineData: {
-            mimeType: 'image/png',
-            data: ref.imageBase64,
-          },
-        });
-      }
-      
-      const characterInstructions = characterReferences
-        .map((ref, i) => `${i + 1}. ${ref.name}: Reference image ${i + 1} shows this character`)
-        .join('\n');
-      
-      const prompt = `Create a children's book illustration using EXACTLY the characters from the reference images provided.
-
-Style: Disney-Pixar children's book illustration, 2D cartoon art, bright cheerful colors.
-
-Characters (maintain EXACT appearance from reference images):
-${characterInstructions}
-
-Scene: ${sceneDescription}
-
-Important:
-- Keep characters looking EXACTLY like their reference images
-- Wide shot showing all characters clearly
-- Warm lighting, clean composition
-- No text or words in image
-- Safe for children 5-10 years old`;
-
-      parts.push({ text: prompt });
-    } else {
-      const characterDescriptions = characters
-        .map(c => `${c.name}: ${c.description || ''}`)
-        .join('. ');
-
-      const prompt = `Children's book illustration, Disney-Pixar cartoon style, bright cheerful colors, simple 2D art.
-
-Scene: ${sceneDescription}
-Characters: ${characterDescriptions}
-Book: ${bookTitle}
-
-Style: Cute, friendly, safe for children 5-10 years old. No text in image. Clean composition.`;
-
-      parts.push({ text: prompt });
-    }
-
-    // Try to generate with Gemini
-    const result = await tryGenerateImageWithGemini(apiKey, parts);
-    
-    if (!result) {
-      console.error('Failed to generate image with any Gemini model');
-      return null;
-    }
-
-    const { imageData, mimeType } = result;
-
-    // Upload to Storage
-    const fileName = `illustrations/${chapterId}_${position}.png`;
-    
-    const { error: uploadError } = await supabase.storage
-      .from('images')
-      .upload(fileName, imageData, {
-        contentType: mimeType,
-        upsert: true,
-      });
-
-    if (uploadError) {
-      console.error('Storage upload error:', uploadError);
-      return null;
-    }
-
-    const { data: urlData } = supabase.storage
-      .from('images')
-      .getPublicUrl(fileName);
-
-    return urlData.publicUrl;
-  } catch (error) {
-    console.error('Image generation failed:', error);
-    return null;
-  }
-}
