@@ -163,13 +163,33 @@ ${hint ? `Подсказка для этой главы: ${hint}` : 'Приду�
 
     console.log(`Found ${illustrationMarkers.length} illustration markers`);
 
+    // If GPT didn't create enough markers, add generic ones at the end
+    if (illustrationMarkers.length < imagesCount) {
+      const missing = imagesCount - illustrationMarkers.length;
+      console.log(`Adding ${missing} missing illustration markers`);
+      
+      for (let i = 0; i < missing; i++) {
+        illustrationMarkers.push({
+          position: illustrationMarkers.length,
+          prompt: `сцена из главы ${nextChapterNum}`,
+          textPosition: chapterContent.length, // At the end
+        });
+      }
+    }
+
     // Replace markers with [IMG:N] placeholders
     let processedContent = chapterContent;
     illustrationMarkers.forEach((marker, i) => {
-      processedContent = processedContent.replace(
-        /\[ИЛЛЮСТРАЦИЯ:\s*[^\]]+\]/i,
-        `[IMG:${i}]`
-      );
+      // Only replace if marker was in original text
+      if (marker.textPosition < chapterContent.length) {
+        processedContent = processedContent.replace(
+          /\[ИЛЛЮСТРАЦИЯ:\s*[^\]]+\]/i,
+          `[IMG:${i}]`
+        );
+      } else {
+        // Add placeholder at the end for missing markers
+        processedContent += `\n\n[IMG:${i}]`;
+      }
     });
 
     // ============ STEP 3: Save chapter immediately ============
