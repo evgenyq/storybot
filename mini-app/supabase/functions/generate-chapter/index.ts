@@ -21,6 +21,14 @@ interface Character {
   image_url?: string;
 }
 
+// Style presets for different story genres
+const STYLE_PRESETS: Record<string, string> = {
+  fairy_tale: 'Пиши добрые волшебные сказки с простым языком и яркими описаниями. Создавай атмосферу волшебства и чудес.',
+  adventure: 'Пиши захватывающие приключения с динамичным сюжетом. Много действия, эмоций и неожиданных поворотов.',
+  detective: 'Пиши детективные истории с загадками и логическими головоломками. Развивай внимательность и аналитическое мышление.',
+  educational: 'Пиши познавательные истории, естественно вплетая интересные факты и объяснения. Обучай через увлекательный сюжет.',
+};
+
 interface PendingIllustration {
   id: string;
   position: number;
@@ -63,7 +71,12 @@ serve(async (req) => {
       .eq('id', book.user_id)
       .single();
 
-    const settings = user?.settings || { chapter_size: 500, images_per_chapter: 2 };
+    const settings = user?.settings || { 
+      chapter_size: 500, 
+      images_per_chapter: 2,
+      style_preset: 'fairy_tale',
+      style_custom: ''
+    };
     const imagesCount = settings.images_per_chapter || 2;
     
     // Prepare context
@@ -71,14 +84,18 @@ serve(async (req) => {
     const previousChapters = book.chapters?.sort((a: any, b: any) => a.chapter_number - b.chapter_number) || [];
     const nextChapterNum = previousChapters.length + 1;
 
-    console.log(`Generating chapter ${nextChapterNum}, characters: ${characters.length}, images: ${imagesCount}`);
+    console.log(`Generating chapter ${nextChapterNum}, characters: ${characters.length}, images: ${imagesCount}, style: ${settings.style_preset}`);
 
     // ============ STEP 1: Generate chapter text with OpenAI ============
     
-    const systemPrompt = `Ты - мастер создания увлекательных детских историй для детей 5-10 лет. 
-Пиши добрые, понятные истории без насилия и страшных сцен.
-Используй простой язык, яркие описания и живые диалоги.
-Персонажи должны вести себя согласно своим описаниям.`;
+    // Build system prompt from preset + custom additions
+    const baseStyle = STYLE_PRESETS[settings.style_preset] || STYLE_PRESETS.fairy_tale;
+    const customAddition = settings.style_custom ? `\n\nДополнительные пожелания: ${settings.style_custom}` : '';
+    
+    const systemPrompt = `Ты - мастер создания увлекательных детских историй для детей 5-10 лет.
+${baseStyle}
+Избегай насилия и страшных сцен. Используй живые диалоги и яркие описания.
+Персонажи должны вести себя согласно своим описаниям.${customAddition}`;
 
     const charactersText = characters.length > 0
       ? characters.map((c: Character) => `- ${c.name}: ${c.description || 'персонаж книги'}`).join('\n')

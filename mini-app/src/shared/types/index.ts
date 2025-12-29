@@ -11,9 +11,13 @@ export interface User {
   updated_at: string;
 }
 
+export type StylePreset = 'fairy_tale' | 'adventure' | 'detective' | 'educational';
+
 export interface UserSettings {
   chapter_size: number;  // 300, 500, 800
   images_per_chapter: number;  // 1, 2, 3
+  style_preset: StylePreset;  // Базовый жанр
+  style_custom: string;  // Дополнительные пожелания (max 200 символов)
 }
 
 export interface Character {
